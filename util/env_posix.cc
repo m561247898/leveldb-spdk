@@ -35,6 +35,7 @@
 #include "port/thread_annotations.h"
 #include "util/env_posix_test_helper.h"
 #include "util/posix_logger.h"
+#include <iostream>
 
 namespace leveldb {
 
@@ -140,6 +141,7 @@ class PosixSequentialFile final : public SequentialFile {
   ~PosixSequentialFile() override { close(fd_); }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
+    printf("Read PosixSequentialFile 144\n");
     Status status;
     while (true) {
       ::ssize_t read_size = ::read(fd_, scratch, n);
@@ -189,6 +191,7 @@ class PosixRandomAccessFile final : public RandomAccessFile {
   }
 
   ~PosixRandomAccessFile() override {
+
     if (has_permanent_fd_) {
       assert(fd_ != -1);
       ::close(fd_);
@@ -198,6 +201,7 @@ class PosixRandomAccessFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
+    printf("Read Read 204\n");
     int fd = fd_;
     if (!has_permanent_fd_) {
       fd = ::open(filename_.c_str(), O_RDONLY | kOpenBaseFlags);
@@ -258,6 +262,7 @@ class PosixMmapReadableFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
+    printf("PosixMmapReadableFile Read 265\n");
     if (offset + n > length_) {
       *result = Slice();
       return PosixError(filename_, EINVAL);
@@ -291,7 +296,8 @@ class PosixWritableFile final : public WritableFile {
   }
 
   Status Append(const Slice& data) override {
-    size_t write_size = data.size();
+     printf("PosixWritableFile Append 299\n");
+	  size_t write_size = data.size();
     const char* write_data = data.data();
 
     // Fit as much as possible into buffer.
@@ -320,7 +326,8 @@ class PosixWritableFile final : public WritableFile {
   }
 
   Status Close() override {
-    Status status = FlushBuffer();
+     printf("PosixWritableFile Close 329\n");
+	  Status status = FlushBuffer();
     const int close_result = ::close(fd_);
     if (close_result < 0 && status.ok()) {
       status = PosixError(filename_, errno);
@@ -337,6 +344,7 @@ class PosixWritableFile final : public WritableFile {
     // This needs to happen before the manifest file is flushed to disk, to
     // avoid crashing in a state where the manifest refers to files that are not
     // yet on disk.
+    printf("PosixWritableFile Sync 347\n");
     Status status = SyncDirIfManifest();
     if (!status.ok()) {
       return status;
@@ -527,6 +535,7 @@ class PosixEnv : public Env {
 
   Status NewSequentialFile(const std::string& filename,
                            SequentialFile** result) override {
+    printf("NewSequentialFile 538\n");
     int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
     if (fd < 0) {
       *result = nullptr;
@@ -539,6 +548,7 @@ class PosixEnv : public Env {
 
   Status NewRandomAccessFile(const std::string& filename,
                              RandomAccessFile** result) override {
+    printf("NewRandomAccessFile 551\n");
     *result = nullptr;
     int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
     if (fd < 0) {
@@ -572,6 +582,7 @@ class PosixEnv : public Env {
 
   Status NewWritableFile(const std::string& filename,
                          WritableFile** result) override {
+    printf("NewWritableFile 585\n");
     int fd = ::open(filename.c_str(),
                     O_TRUNC | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
@@ -585,6 +596,7 @@ class PosixEnv : public Env {
 
   Status NewAppendableFile(const std::string& filename,
                            WritableFile** result) override {
+    printf("NewAppendableFile 599\n");
     int fd = ::open(filename.c_str(),
                     O_APPEND | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
@@ -602,6 +614,7 @@ class PosixEnv : public Env {
 
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
+    printf("GetChildren 617\n");
     result->clear();
     ::DIR* dir = ::opendir(directory_path.c_str());
     if (dir == nullptr) {
@@ -616,6 +629,7 @@ class PosixEnv : public Env {
   }
 
   Status RemoveFile(const std::string& filename) override {
+     printf("RemoveFile 632\n");
     if (::unlink(filename.c_str()) != 0) {
       return PosixError(filename, errno);
     }
@@ -623,6 +637,8 @@ class PosixEnv : public Env {
   }
 
   Status CreateDir(const std::string& dirname) override {
+    printf("CreateDir 640\n");
+    std::cout << dirname.c_str() << std::endl;
     if (::mkdir(dirname.c_str(), 0755) != 0) {
       return PosixError(dirname, errno);
     }
@@ -630,6 +646,8 @@ class PosixEnv : public Env {
   }
 
   Status RemoveDir(const std::string& dirname) override {
+    // while (1);
+    printf("RemoveDir 650\n");
     if (::rmdir(dirname.c_str()) != 0) {
       return PosixError(dirname, errno);
     }
@@ -637,6 +655,7 @@ class PosixEnv : public Env {
   }
 
   Status GetFileSize(const std::string& filename, uint64_t* size) override {
+    printf("GetFileSize 658\n");
     struct ::stat file_stat;
     if (::stat(filename.c_str(), &file_stat) != 0) {
       *size = 0;
@@ -647,6 +666,7 @@ class PosixEnv : public Env {
   }
 
   Status RenameFile(const std::string& from, const std::string& to) override {
+    printf("RenameFile 669\n");
     if (std::rename(from.c_str(), to.c_str()) != 0) {
       return PosixError(from, errno);
     }
