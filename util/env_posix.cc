@@ -201,7 +201,6 @@ class PosixRandomAccessFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
-    printf("Read Read 204\n");
     int fd = fd_;
     if (!has_permanent_fd_) {
       fd = ::open(filename_.c_str(), O_RDONLY | kOpenBaseFlags);
@@ -535,7 +534,6 @@ class PosixEnv : public Env {
 
   Status NewSequentialFile(const std::string& filename,
                            SequentialFile** result) override {
-    printf("NewSequentialFile 538\n");
     int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
     if (fd < 0) {
       *result = nullptr;
@@ -548,7 +546,6 @@ class PosixEnv : public Env {
 
   Status NewRandomAccessFile(const std::string& filename,
                              RandomAccessFile** result) override {
-    printf("NewRandomAccessFile 551\n");
     *result = nullptr;
     int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
     if (fd < 0) {
@@ -582,7 +579,6 @@ class PosixEnv : public Env {
 
   Status NewWritableFile(const std::string& filename,
                          WritableFile** result) override {
-    printf("NewWritableFile 585\n");
     int fd = ::open(filename.c_str(),
                     O_TRUNC | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
@@ -596,7 +592,6 @@ class PosixEnv : public Env {
 
   Status NewAppendableFile(const std::string& filename,
                            WritableFile** result) override {
-    printf("NewAppendableFile 599\n");
     int fd = ::open(filename.c_str(),
                     O_APPEND | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
@@ -614,7 +609,6 @@ class PosixEnv : public Env {
 
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
-    printf("GetChildren 617\n");
     result->clear();
     ::DIR* dir = ::opendir(directory_path.c_str());
     if (dir == nullptr) {
@@ -667,6 +661,10 @@ class PosixEnv : public Env {
 
   Status RenameFile(const std::string& from, const std::string& to) override {
     printf("RenameFile 669\n");
+    std::cout << "from =      ";
+    std::cout << from.c_str() << std::endl;
+    std::cout << "to =      ";
+    std::cout << to.c_str() << std::endl;
     if (std::rename(from.c_str(), to.c_str()) != 0) {
       return PosixError(from, errno);
     }

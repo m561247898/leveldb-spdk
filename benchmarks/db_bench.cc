@@ -46,27 +46,27 @@
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
     "fillseq,"
-    // "fillsync,"
-    // "fillrandom,"
-    // "overwrite,"
-    // "readrandom,"
-    // "readrandom,"  // Extra run to allow previous compactions to quiesce
-    // "readseq,"
-    // "readreverse,"
-    // "compact,"
-    // "readrandom,"
-    // "readseq,"
-    // "readreverse,"
+    "fillsync,"
+    "fillrandom,"
+    "overwrite,"
+    "readrandom,"
+    "readrandom,"  // Extra run to allow previous compactions to quiesce
+    "readseq,"
+    "readreverse,"
+    "compact,"
+    "readrandom,"
+    "readseq,"
+    "readreverse,"
     // "fill100K,"
-    // "crc32c,"
-    // "snappycomp,"
-    // "snappyuncomp,"
-    // "zstdcomp,"
-    // "zstduncomp,"
+    "crc32c,"
+    "snappycomp,"
+    "snappyuncomp,"
+    "zstdcomp,"
+    "zstduncomp,"
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1;
+static int FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
 static int FLAGS_reads = -1;
@@ -536,6 +536,7 @@ class Benchmark {
     g_env->GetChildren(FLAGS_db, &files);
     for (size_t i = 0; i < files.size(); i++) {
       if (Slice(files[i]).starts_with("heap-")) {
+        printf("db_bench 539\n");
         g_env->RemoveFile(std::string(FLAGS_db) + "/" + files[i]);
       }
     }
@@ -1135,6 +1136,6 @@ int main(int argc, char** argv) {
 
   leveldb::Benchmark benchmark;
   benchmark.Run();
-  
+  printf("db_bench finish!\n");
   return 0;
 }

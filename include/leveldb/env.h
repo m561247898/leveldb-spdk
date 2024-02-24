@@ -268,7 +268,7 @@ class LEVELDB_EXPORT RandomAccessFile {
   //
   // Safe for concurrent use by multiple threads.
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
-                      char* scratch) const = 0;
+                      char* scratch) = 0;
 };
 
 // A file abstraction for sequential writing.  The implementation
@@ -287,6 +287,11 @@ class LEVELDB_EXPORT WritableFile {
   virtual Status Close() = 0;
   virtual Status Flush() = 0;
   virtual Status Sync() = 0;
+  // spdk
+  virtual Status AsyncSync() { return Status::NotSupported("AsyncSync"); }
+  virtual bool CheckSync() { return false; }
+  virtual Status FlushSync() { return Status::NotSupported("FlushSync"); }
+
 };
 
 // An interface for writing log messages.

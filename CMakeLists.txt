@@ -98,6 +98,7 @@ int main() { std::string str; return 0; }
 
 set(LEVELDB_PUBLIC_INCLUDE_DIR "include/leveldb")
 set(LEVELDB_PORT_CONFIG_DIR "include/port")
+set(ENV{HOME} "/home/hyam/spdk-v20.01.x")
 
 configure_file(
   "port/port_config.h.in"
@@ -107,6 +108,12 @@ configure_file(
 include_directories(
   "${PROJECT_BINARY_DIR}/include"
   "."
+  "/home/hyam/spdk-v20.01.x/spdk/include"
+)
+
+link_directories(
+  "/home/hyam/spdk-v20.01.x/spdk/build/lib"
+  "/home/hyam/spdk-v20.01.x/spdk/dpdk/build/lib"
 )
 
 if(BUILD_SHARED_LIBS)
@@ -217,19 +224,25 @@ if (WIN32)
       "util/windows_logger.h"
   )
 else (WIN32)
-  target_sources(leveldb
-    PRIVATE
-      "util/env_posix.cc"
-      "util/posix_logger.h"
-  )
+  # target_sources(leveldb
+  #   PRIVATE
+  #     "util/env_posix.cc"
+  #     "util/posix_logger.h"
+  # )
 endif (WIN32)
 
-# MemEnv is not part of the interface and could be pulled to a separate library.
 target_sources(leveldb
-  PRIVATE
-    "helpers/memenv/memenv.cc"
-    "helpers/memenv/memenv.h"
+PRIVATE
+  "${PROJECT_SOURCE_DIR}/util/env_spdk.cc"
+  "${PROJECT_SOURCE_DIR}/util/spdk_logger.h"
 )
+
+# MemEnv is not part of the interface and could be pulled to a separate library.
+# target_sources(leveldb
+#   PRIVATE
+#     "helpers/memenv/memenv.cc"
+#     "helpers/memenv/memenv.h"
+# )
 
 target_include_directories(leveldb
   PUBLIC
@@ -246,6 +259,15 @@ target_compile_definitions(leveldb
     LEVELDB_COMPILE_LIBRARY
     # Used by port/port.h.
     ${LEVELDB_PLATFORM_NAME}=1
+    LDB_ASYNCFLUSH=0
+    LDB_CACHELAST=1
+    LDB_PARTIALREAD=0
+    LDB_UNAFFINITIZE=1
+    LDB_SPLITFS=0
+    LDB_SPLITFLUSH=0
+    #LDB_OBJ_SIZE_MB=32
+    #LDB_MAX_OPEN_FILES=1000
+    #LDB_OBJ_CNT=4096
 )
 if (NOT HAVE_CXX17_HAS_INCLUDE)
   target_compile_definitions(leveldb
@@ -288,7 +310,43 @@ target_link_libraries(leveldb Threads::Threads)
 add_executable(leveldbutil
   "db/leveldbutil.cc"
 )
-target_link_libraries(leveldbutil leveldb)
+
+# spdk
+target_link_libraries(leveldbutil leveldb
+  -Wl,-rpath,$ENV{HOME}/spdk/build/lib:$ENV{HOME}/spdk/dpdk/build/lib -L$ENV{HOME}/spdk/build/lib  -L$ENV{HOME}/spdk/dpdk/build/lib -pthread
+  -Wl,--whole-archive -Wl,--no-as-needed -lspdk_sock_posix -lspdk_nvme -lspdk_thread -lspdk_util -lspdk_log -lspdk_sock -lspdk_vmd -Wl,--no-whole-archive
+  $ENV{HOME}/spdk/build/lib/libspdk_env_dpdk.a
+  -Wl,--whole-archive,--no-as-needed $ENV{HOME}/spdk/dpdk/build/lib/librte_eal.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool.a $ENV{HOME}/spdk/dpdk/build/lib/librte_ring.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_mbuf.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool_ring.a $ENV{HOME}/spdk/dpdk/build/lib/librte_pci.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_bus_pci.a $ENV{HOME}/spdk/dpdk/build/lib/librte_kvargs.a $ENV{HOME}/spdk/dpdk/build/lib/librte_vhost.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_net.a $ENV{HOME}/spdk/dpdk/build/lib/librte_cryptodev.a $ENV{HOME}/spdk/dpdk/build/lib/librte_hash.a -Wl,--no-whole-archive
+  -lnuma -ldl -L$ENV{HOME}/spdk/isa-l/.libs -lrt -luuid -lcrypto -laio
+)
+
+# dumpsb
+add_executable(dumpsb
+  "${PROJECT_SOURCE_DIR}/db/dumpsb.cc"
+)
+
+target_link_libraries(dumpsb leveldb
+  -Wl,-rpath,$ENV{HOME}/spdk/build/lib:$ENV{HOME}/spdk/dpdk/build/lib -L$ENV{HOME}/spdk/build/lib  -L$ENV{HOME}/spdk/dpdk/build/lib -pthread
+  -Wl,--whole-archive -Wl,--no-as-needed -lspdk_sock_posix -lspdk_nvme -lspdk_thread -lspdk_util -lspdk_log -lspdk_sock -lspdk_vmd -Wl,--no-whole-archive
+  $ENV{HOME}/spdk/build/lib/libspdk_env_dpdk.a
+  -Wl,--whole-archive,--no-as-needed $ENV{HOME}/spdk/dpdk/build/lib/librte_eal.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool.a $ENV{HOME}/spdk/dpdk/build/lib/librte_ring.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_mbuf.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool_ring.a $ENV{HOME}/spdk/dpdk/build/lib/librte_pci.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_bus_pci.a $ENV{HOME}/spdk/dpdk/build/lib/librte_kvargs.a $ENV{HOME}/spdk/dpdk/build/lib/librte_vhost.a
+  $ENV{HOME}/spdk/dpdk/build/lib/librte_net.a $ENV{HOME}/spdk/dpdk/build/lib/librte_cryptodev.a $ENV{HOME}/spdk/dpdk/build/lib/librte_hash.a -Wl,--no-whole-archive
+  -lnuma -ldl -L$ENV{HOME}/spdk/isa-l/.libs -lrt -luuid -lcrypto -laio
+)
+
+target_link_libraries(leveldb
+  spdk_nvme spdk_thread spdk_util spdk_log spdk_sock spdk_vmd spdk_env_dpdk
+  dpdk rte_bus_pci rte_bus_vdev rte_cmdline rte_compressdev rte_cryptodev rte_eal rte_ethdev
+  rte_fib rte_hash rte_kvargs rte_mbuf rte_mempool rte_mempool_bucket rte_mempool_ring rte_meter
+  rte_net rte_pci rte_rib rte_ring rte_vhost
+  numa dl uuid
+)
+
 
 if(LEVELDB_BUILD_TESTS)
   enable_testing()
@@ -310,59 +368,60 @@ if(LEVELDB_BUILD_TESTS)
         APPEND PROPERTY COMPILE_OPTIONS -Wno-missing-field-initializers)
   endif(LEVELDB_HAVE_NO_MISSING_FIELD_INITIALIZERS)
 
-  add_executable(leveldb_tests "")
-  target_sources(leveldb_tests
-    PRIVATE
-      # "db/fault_injection_test.cc"
-      # "issues/issue178_test.cc"
-      # "issues/issue200_test.cc"
-      # "issues/issue320_test.cc"
-      "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
-      # "util/env_test.cc"
-      "util/status_test.cc"
-      "util/no_destructor_test.cc"
-      "util/testutil.cc"
-      "util/testutil.h"
-  )
-  if(NOT BUILD_SHARED_LIBS)
-    target_sources(leveldb_tests
-      PRIVATE
-        "db/autocompact_test.cc"
-        "db/corruption_test.cc"
-        "db/db_test.cc"
-        "db/dbformat_test.cc"
-        "db/filename_test.cc"
-        "db/log_test.cc"
-        "db/recovery_test.cc"
-        "db/skiplist_test.cc"
-        "db/version_edit_test.cc"
-        "db/version_set_test.cc"
-        "db/write_batch_test.cc"
-        "helpers/memenv/memenv_test.cc"
-        "table/filter_block_test.cc"
-        "table/table_test.cc"
-        "util/arena_test.cc"
-        "util/bloom_test.cc"
-        "util/cache_test.cc"
-        "util/coding_test.cc"
-        "util/crc32c_test.cc"
-        "util/hash_test.cc"
-        "util/logging_test.cc"
-    )
-  endif(NOT BUILD_SHARED_LIBS)
-  target_link_libraries(leveldb_tests leveldb gmock gtest gtest_main)
-  target_compile_definitions(leveldb_tests
-    PRIVATE
-      ${LEVELDB_PLATFORM_NAME}=1
-  )
-  if (NOT HAVE_CXX17_HAS_INCLUDE)
-    target_compile_definitions(leveldb_tests
-      PRIVATE
-        LEVELDB_HAS_PORT_CONFIG_H=1
-    )
-  endif(NOT HAVE_CXX17_HAS_INCLUDE)
+  # ignore leveldb_tests
+  # add_executable(leveldb_tests "")
+  # target_sources(leveldb_tests
+  #   PRIVATE
+  #     # "db/fault_injection_test.cc"
+  #     # "issues/issue178_test.cc"
+  #     # "issues/issue200_test.cc"
+  #     # "issues/issue320_test.cc"
+  #     "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
+  #     # "util/env_test.cc"
+  #     "util/status_test.cc"
+  #     "util/no_destructor_test.cc"
+  #     "util/testutil.cc"
+  #     "util/testutil.h"
+  # )
+  # if(NOT BUILD_SHARED_LIBS)
+  #   target_sources(leveldb_tests
+  #     PRIVATE
+  #       "db/autocompact_test.cc"
+  #       "db/corruption_test.cc"
+  #       "db/db_test.cc"
+  #       "db/dbformat_test.cc"
+  #       "db/filename_test.cc"
+  #       "db/log_test.cc"
+  #       "db/recovery_test.cc"
+  #       "db/skiplist_test.cc"
+  #       "db/version_edit_test.cc"
+  #       "db/version_set_test.cc"
+  #       "db/write_batch_test.cc"
+  #       "helpers/memenv/memenv_test.cc"
+  #       "table/filter_block_test.cc"
+  #       "table/table_test.cc"
+  #       "util/arena_test.cc"
+  #       "util/bloom_test.cc"
+  #       "util/cache_test.cc"
+  #       "util/coding_test.cc"
+  #       "util/crc32c_test.cc"
+  #       "util/hash_test.cc"
+  #       "util/logging_test.cc"
+  #   )
+  # endif(NOT BUILD_SHARED_LIBS)
+  # target_link_libraries(leveldb_tests leveldb gmock gtest gtest_main)
+  # target_compile_definitions(leveldb_tests
+  #   PRIVATE
+  #     ${LEVELDB_PLATFORM_NAME}=1
+  # )
+  # if (NOT HAVE_CXX17_HAS_INCLUDE)
+  #   target_compile_definitions(leveldb_tests
+  #     PRIVATE
+  #       LEVELDB_HAS_PORT_CONFIG_H=1
+  #   )
+  # endif(NOT HAVE_CXX17_HAS_INCLUDE)
 
-  add_test(NAME "leveldb_tests" COMMAND "leveldb_tests")
+  # add_test(NAME "leveldb_tests" COMMAND "leveldb_tests")
 
   function(leveldb_test test_file)
     get_filename_component(test_target_name "${test_file}" NAME_WE)
@@ -424,7 +483,19 @@ if(LEVELDB_BUILD_BENCHMARKS)
 
         "${bench_file}"
     )
-    target_link_libraries("${bench_target_name}" leveldb gmock gtest benchmark)
+
+    # test spdk
+    # target_link_libraries("${bench_target_name}" leveldb gmock gtest benchmark)
+      target_link_libraries("${bench_target_name}" leveldb gmock gtest benchmark
+        -Wl,-rpath,$ENV{HOME}/spdk/build/lib:$ENV{HOME}/spdk/dpdk/build/lib -L$ENV{HOME}/spdk/build/lib  -L$ENV{HOME}/spdk/dpdk/build/lib -pthread
+        -Wl,--whole-archive -Wl,--no-as-needed -lspdk_sock_posix -lspdk_nvme -lspdk_thread -lspdk_util -lspdk_log -lspdk_sock -lspdk_vmd -Wl,--no-whole-archive
+        $ENV{HOME}/spdk/build/lib/libspdk_env_dpdk.a
+        -Wl,--whole-archive,--no-as-needed $ENV{HOME}/spdk/dpdk/build/lib/librte_eal.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool.a $ENV{HOME}/spdk/dpdk/build/lib/librte_ring.a
+        $ENV{HOME}/spdk/dpdk/build/lib/librte_mbuf.a $ENV{HOME}/spdk/dpdk/build/lib/librte_mempool_ring.a $ENV{HOME}/spdk/dpdk/build/lib/librte_pci.a
+        $ENV{HOME}/spdk/dpdk/build/lib/librte_bus_pci.a $ENV{HOME}/spdk/dpdk/build/lib/librte_kvargs.a $ENV{HOME}/spdk/dpdk/build/lib/librte_vhost.a
+        $ENV{HOME}/spdk/dpdk/build/lib/librte_net.a $ENV{HOME}/spdk/dpdk/build/lib/librte_cryptodev.a $ENV{HOME}/spdk/dpdk/build/lib/librte_hash.a -Wl,--no-whole-archive
+        -lnuma -ldl -L$ENV{HOME}/spdk/isa-l/.libs -lrt -luuid -lcrypto -laio
+      )
     target_compile_definitions("${bench_target_name}"
       PRIVATE
         ${LEVELDB_PLATFORM_NAME}=1

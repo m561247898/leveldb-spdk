@@ -34,7 +34,7 @@
 #include "util/coding.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
-
+#include <iostream>
 namespace leveldb {
 
 const int kNumNonTableCacheFiles = 10;
@@ -1496,7 +1496,7 @@ DB::~DB() = default;
 
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
   *dbptr = nullptr;
-
+  // dbname = /tmp/leveldbtest-0/dbbench
   DBImpl* impl = new DBImpl(options, dbname);
   impl->mutex_.Lock();
   VersionEdit edit;
