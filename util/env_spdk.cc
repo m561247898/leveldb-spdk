@@ -74,7 +74,6 @@ namespace leveldb {
 #define OBJ_SIZE (1ULL * LDB_OBJ_SIZE_MB * 1024 * 1024)
 #else
 #define OBJ_SIZE (4ULL * 1024 * 1024)  // 4 MiB per object
-// #define OBJ_SIZE (8ULL * 1024 * 1024)  // 8 MiB per object
 #endif
 
 #define META_SIZE (128)
