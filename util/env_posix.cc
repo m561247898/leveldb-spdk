@@ -623,7 +623,6 @@ class PosixEnv : public Env {
   }
 
   Status RemoveFile(const std::string& filename) override {
-     printf("RemoveFile 632\n");
     if (::unlink(filename.c_str()) != 0) {
       return PosixError(filename, errno);
     }

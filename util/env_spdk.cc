@@ -2,8 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#include "db/filename.h"
-#include <algorithm>
+#include <dirent.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
@@ -11,59 +22,43 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
-#include <fcntl.h>
 #include <limits>
-#include <linux/fs.h>
-#include <map>
-#include <pthread.h>
+#include <algorithm>
 #include <queue>
 #include <set>
-#include <stdint.h>
+#include <map>
 #include <string>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
-#include <iostream>
 
 #include "leveldb/env.h"
 #include "leveldb/slice.h"
 #include "leveldb/status.h"
-
 #include "port/port.h"
 #include "port/thread_annotations.h"
 #include "util/env_posix_test_helper.h"
 #include "util/posix_logger.h"
 
-#include "spdk/env.h"
+#include "db/filename.h"
+
+#include "spdk/stdinc.h"
 #include "spdk/ioat.h"
 #include "spdk/nvme.h"
-#include "spdk/stdinc.h"
 #include "spdk/string.h"
+#include "spdk/env.h"
 
 #ifdef NDEBUG
-#define dprint(...) \
-  do {              \
-  } while (0)
+// #define //dprint(...) do { } while (0)
 #else
-#define dprint(...)               \
-  do {                            \
-    fprintf(stderr, __VA_ARGS__); \
-  } while (0)
+// #define //dprint(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
 #endif
 
 namespace leveldb {
 
-#define ROUND_UP(N, S) (((N) + (S)-1) / (S) * (S))
+#define ROUND_UP(N, S) (((N) + (S) - 1) / (S) * (S))
 #define ROUND_DOWN(N, S) ((N) / (S) * (S))
-#define DIV_ROUND_UP(N, S) (((N) + (S)-1) / (S))
+#define DIV_ROUND_UP(N, S) (((N) + (S) - 1) / (S))
 
 #define LDBFS_MAGIC (0xe51ab1541542020full)
 
@@ -73,7 +68,7 @@ namespace leveldb {
 #endif
 #define OBJ_SIZE (1ULL * LDB_OBJ_SIZE_MB * 1024 * 1024)
 #else
-#define OBJ_SIZE (4ULL * 1024 * 1024)  // 4 MiB per object
+#define OBJ_SIZE (4ULL * 1024 * 1024)       // 4 MiB per object
 #endif
 
 #define META_SIZE (128)
@@ -92,7 +87,7 @@ static_assert(OBJ_CNT <= MAX_OBJ_CNT, "");
 
 #define PAGESIZE (4096)
 
-#define READ_UNIT (64ULL * 1024)  // Read granularity
+#define READ_UNIT (64ULL * 1024)            // Read granularity
 
 static_assert(OBJ_SIZE % READ_UNIT == 0, "");
 
@@ -103,11 +98,11 @@ struct FileMeta {
     struct {
       uint32_t f_size;
       uint16_t f_reserved;
-      uint8_t f_name_len;
+      uint8_t  f_name_len;
     };
-    uint64_t sb_magic;
+    uint64_t   sb_magic;
   };
-  char f_name[MAX_NAMELEN];
+  char         f_name[MAX_NAMELEN];
 };
 static_assert(sizeof(FileMeta) == META_SIZE, "FileMeta size");
 
@@ -127,8 +122,8 @@ struct ns_entry {
   struct ns_entry* next;
 };
 
-struct ctrlr_entry* g_controllers = NULL;  // guarded by g_ns_mtx
-struct ns_entry* g_namespaces = NULL;      // guarded by g_ns_mtx
+struct ctrlr_entry* g_controllers = NULL; // guarded by g_ns_mtx
+struct ns_entry* g_namespaces = NULL;     // guarded by g_ns_mtx
 port::Mutex g_ns_mtx;
 
 int g_sectsize;
@@ -157,7 +152,9 @@ struct ThreadInfo {
     compaction_thd = false;
     qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_namespaces->ctrlr, NULL, 0);
   }
-  ~ThreadInfo() { spdk_nvme_ctrlr_free_io_qpair(qpair); }
+  ~ThreadInfo() {
+    spdk_nvme_ctrlr_free_io_qpair(qpair);
+  }
 };
 
 thread_local ThreadInfo tinfo;
@@ -165,16 +162,19 @@ thread_local ThreadInfo tinfo;
 bool g_vmd = false;
 
 bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
-              struct spdk_nvme_ctrlr_opts* opts) {
+              struct spdk_nvme_ctrlr_opts* opts)
+{
   fprintf(stderr, "Attaching to %s\n", trid->traddr);
   opts->io_queue_size = UINT16_MAX;
   return true;
 }
 
-void register_ns(struct spdk_nvme_ctrlr* ctrlr, struct spdk_nvme_ns* ns) {
-  struct ns_entry* entry;
+void register_ns(struct spdk_nvme_ctrlr* ctrlr, struct spdk_nvme_ns* ns)
+{
+  struct ns_entry *entry;
 
-  if (!spdk_nvme_ns_is_active(ns)) return;
+  if (!spdk_nvme_ns_is_active(ns))
+    return;
 
   entry = new ns_entry;
   if (entry == NULL) {
@@ -188,9 +188,10 @@ void register_ns(struct spdk_nvme_ctrlr* ctrlr, struct spdk_nvme_ns* ns) {
   g_namespaces = entry;
 }
 
+
 void attach_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
-               struct spdk_nvme_ctrlr* ctrlr,
-               const struct spdk_nvme_ctrlr_opts* opts) {
+               struct spdk_nvme_ctrlr* ctrlr, const struct spdk_nvme_ctrlr_opts* opts)
+{
   int nsid, num_ns;
   struct ctrlr_entry* entry;
   struct spdk_nvme_ns* ns;
@@ -205,41 +206,42 @@ void attach_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
   fprintf(stderr, "Attachedto %s\n", trid->traddr);
   cdata = spdk_nvme_ctrlr_get_data(ctrlr);
 
-  snprintf(entry->name, sizeof(entry->name), "%-20.20s (%-20.20s)", cdata->mn,
-           cdata->sn);
+  snprintf(entry->name, sizeof(entry->name), "%-20.20s (%-20.20s)", cdata->mn, cdata->sn);
   entry->ctrlr = ctrlr;
   entry->next = g_controllers;
   g_controllers = entry;
 
   num_ns = spdk_nvme_ctrlr_get_num_ns(ctrlr);
-  fprintf(stderr, "Using controller %s with %d namespaces.\n", entry->name,
-          num_ns);
+  fprintf(stderr, "Using controller %s with %d namespaces.\n", entry->name, num_ns);
   for (nsid = 1; nsid <= num_ns; nsid++) {
     ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
-    if (ns == NULL) continue;
+    if (ns == NULL)
+      continue;
     register_ns(ctrlr, ns);
   }
 }
 
-void cleanup(void) {
-  struct ns_entry* ns_entry = g_namespaces;
-  struct ctrlr_entry* ctrlr_entry = g_controllers;
+void cleanup(void)
+{
+  struct ns_entry *ns_entry = g_namespaces;
+  struct ctrlr_entry *ctrlr_entry = g_controllers;
 
   while (ns_entry) {
-    struct ns_entry* next = ns_entry->next;
+    struct ns_entry *next = ns_entry->next;
     free(ns_entry);
     ns_entry = next;
   }
 
   while (ctrlr_entry) {
-    struct ctrlr_entry* next = ctrlr_entry->next;
+    struct ctrlr_entry *next = ctrlr_entry->next;
     spdk_nvme_detach(ctrlr_entry->ctrlr);
     free(ctrlr_entry);
     ctrlr_entry = next;
   }
 }
 
-void write_complete(void* arg, const struct spdk_nvme_cpl* completion) {
+void write_complete(void *arg, const struct spdk_nvme_cpl *completion)
+{
   int* compl_status = static_cast<int*>(arg);
   *compl_status = 1;
   if (spdk_nvme_cpl_is_error(completion)) {
@@ -248,7 +250,8 @@ void write_complete(void* arg, const struct spdk_nvme_cpl* completion) {
   }
 }
 
-void read_complete(void* arg, const struct spdk_nvme_cpl* completion) {
+void read_complete(void *arg, const struct spdk_nvme_cpl *completion)
+{
   int* compl_status = static_cast<int*>(arg);
   *compl_status = 1;
   if (spdk_nvme_cpl_is_error(completion)) {
@@ -257,7 +260,8 @@ void read_complete(void* arg, const struct spdk_nvme_cpl* completion) {
   }
 }
 
-void flush_complete(void* arg, const struct spdk_nvme_cpl* completion) {
+void flush_complete(void *arg, const struct spdk_nvme_cpl *completion)
+{
   int* compl_status = static_cast<int*>(arg);
   *compl_status = 1;
   if (spdk_nvme_cpl_is_error(completion)) {
@@ -266,18 +270,19 @@ void flush_complete(void* arg, const struct spdk_nvme_cpl* completion) {
   }
 }
 
-void write_from_buf(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
-                    void* buf, uint64_t lba, uint32_t cnt, int* chk_compl) {
+void write_from_buf(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+                    void *buf, uint64_t lba, uint32_t cnt, int* chk_compl)
+{
   int rc;
 
   if (cnt == 0) {
-    if (chk_compl != nullptr) *chk_compl = 1;
+    if (chk_compl != nullptr)
+      *chk_compl = 1;
     return;
   }
 
   if (chk_compl != nullptr) {
-    rc = spdk_nvme_ns_cmd_write(ns, qpair, buf, lba, cnt, write_complete,
-                                chk_compl, 0);
+    rc = spdk_nvme_ns_cmd_write(ns, qpair, buf, lba, cnt, write_complete, chk_compl, 0);
     if (rc != 0) {
       fprintf(stderr, "spdk cmd wirte failed\n");
       exit(1);
@@ -286,27 +291,28 @@ void write_from_buf(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
   }
 
   int l_chk_cpl = 0;
-  rc = spdk_nvme_ns_cmd_write(ns, qpair, buf, lba, cnt, write_complete,
-                              &l_chk_cpl, 0);
+  rc = spdk_nvme_ns_cmd_write(ns, qpair, buf, lba, cnt, write_complete, &l_chk_cpl, 0);
   if (rc != 0) {
     fprintf(stderr, "spdk write failed\n");
     exit(1);
   }
-  while (!l_chk_cpl) spdk_nvme_qpair_process_completions(qpair, 0);
+  while (!l_chk_cpl)
+    spdk_nvme_qpair_process_completions(qpair, 0);
 }
 
-void read_to_buf(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
-                 void* buf, uint64_t lba, uint32_t cnt, int* chk_compl) {
+void read_to_buf(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+                 void *buf, uint64_t lba, uint32_t cnt, int* chk_compl)
+{
   int rc;
 
   if (cnt == 0) {
-    if (chk_compl != nullptr) *chk_compl = 1;
+    if (chk_compl != nullptr)
+      *chk_compl = 1;
     return;
   }
 
   if (chk_compl != nullptr) {
-    rc = spdk_nvme_ns_cmd_read(ns, qpair, buf, lba, cnt, read_complete,
-                               chk_compl, 0);
+    rc = spdk_nvme_ns_cmd_read(ns, qpair, buf, lba, cnt, read_complete, chk_compl, 0);
     if (rc != 0) {
       fprintf(stderr, "spdk cmd read failed\n");
       exit(1);
@@ -315,17 +321,17 @@ void read_to_buf(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
   }
 
   int l_chk_cpl = 0;
-  rc = spdk_nvme_ns_cmd_read(ns, qpair, buf, lba, cnt, read_complete,
-                             &l_chk_cpl, 0);
+  rc = spdk_nvme_ns_cmd_read(ns, qpair, buf, lba, cnt, read_complete, &l_chk_cpl, 0);
   if (rc != 0) {
     fprintf(stderr, "spdk read failed\n");
     exit(1);
   }
-  while (!l_chk_cpl) spdk_nvme_qpair_process_completions(qpair, 0);
+  while (!l_chk_cpl)
+    spdk_nvme_qpair_process_completions(qpair, 0);
 }
 
-void flush_to_dev(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
-                  int* chk_compl) {
+void flush_to_dev(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, int* chk_compl)
+{
   int rc;
 
   if (chk_compl != nullptr) {
@@ -343,14 +349,17 @@ void flush_to_dev(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qpair,
     fprintf(stderr, "spdk flush failed\n");
     exit(1);
   }
-  while (!l_chk_cpl) spdk_nvme_qpair_process_completions(qpair, 0);
+  while (!l_chk_cpl)
+    spdk_nvme_qpair_process_completions(qpair, 0);
 }
 
-void check_completion(struct spdk_nvme_qpair* qpair) {
+void check_completion(struct spdk_nvme_qpair* qpair)
+{
   spdk_nvme_qpair_process_completions(qpair, 0);
 }
 
-void init_spdk(void) {
+void init_spdk(void)
+{
   int rc;
   struct spdk_env_opts opts;
 
@@ -381,7 +390,7 @@ void init_spdk(void) {
     exit(1);
   }
 
-  struct ns_entry* ns_ent = g_namespaces;
+  struct ns_entry *ns_ent = g_namespaces;
 
   g_sectsize = spdk_nvme_ns_get_sector_size(ns_ent->ns);
   g_nsect = spdk_nvme_ns_get_num_sectors(ns_ent->ns);
@@ -389,12 +398,9 @@ void init_spdk(void) {
   g_sect_per_obj = OBJ_SIZE / g_sectsize;
   g_dev_size = spdk_nvme_ns_get_size(ns_ent->ns);
 
-  printf(
-      "-------------------------------------finish spdk "
-      "init-------------------------------------\n");
-  dprint("nvme sector size %d\n", g_sectsize);       // 512
-  dprint("nvme ns sector count %d\n", g_nsect);      // 976773168
-  dprint("sectors per block %d\n", g_sect_per_obj);  // 8192
+  //dprint("nvme sector size %d\n", g_sectsize);
+  //dprint("nvme ns sector count %d\n", g_nsect);
+  //dprint("sectors per block %d\n", g_sect_per_obj);
 }
 
 namespace {
@@ -418,16 +424,240 @@ Slice Basename(const std::string& filename) {
     return Slice(filename);
   }
   return Slice(filename.data() + separator_pos + 1,
-               filename.length() - separator_pos - 1);
+      filename.length() - separator_pos - 1);
 }
+
+
+// Implements random read access in a file using mmap().
+//
+// Instances of this class are thread-safe, as required by the RandomAccessFile
+// API. Instances are immutable and Read() only calls thread-safe library
+// functions.
+class PosixMmapReadableFile final : public RandomAccessFile {
+ public:
+  // mmap_base[0, length-1] points to the memory-mapped contents of the file. It
+  // must be the result of a successful call to mmap(). This instances takes
+  // over the ownership of the region.
+  PosixMmapReadableFile(std::string filename, char* mmap_base, size_t length)
+      : mmap_base_(mmap_base),
+        length_(length),
+        filename_(std::move(filename)) {}
+
+  ~PosixMmapReadableFile() override {
+    ::munmap(static_cast<void*>(mmap_base_), length_);
+  }
+
+  Status Read(uint64_t offset, size_t n, Slice* result,
+              char* scratch) override {
+    if (offset + n > length_) {
+      *result = Slice();
+      return PosixError(filename_, EINVAL);
+    }
+
+    *result = Slice(mmap_base_ + offset, n);
+    return Status::OK();
+  }
+
+ private:
+  char* const mmap_base_;
+  const size_t length_;
+  const std::string filename_;
+};
+
+class PosixWritableFile final : public WritableFile {
+ public:
+  PosixWritableFile(std::string filename, int fd)
+      : pos_(0),
+        fd_(fd),
+        is_manifest_(IsManifest(filename)),
+        filename_(std::move(filename)),
+        dirname_(Dirname(filename_)) {}
+
+  ~PosixWritableFile() override {
+    if (fd_ >= 0) {
+      // Ignoring any potential errors
+      Close();
+    }
+  }
+
+  Status Append(const Slice& data) override {
+    size_t write_size = data.size();
+    const char* write_data = data.data();
+
+    // Fit as much as possible into buffer.
+    size_t copy_size = std::min(write_size, kWritableFileBufferSize - pos_);
+    std::memcpy(buf_ + pos_, write_data, copy_size);
+    write_data += copy_size;
+    write_size -= copy_size;
+    pos_ += copy_size;
+    if (write_size == 0) {
+      return Status::OK();
+    }
+
+    // Can't fit in buffer, so need to do at least one write.
+    Status status = FlushBuffer();
+    if (!status.ok()) {
+      return status;
+    }
+
+    // Small writes go to buffer, large writes are written directly.
+    if (write_size < kWritableFileBufferSize) {
+      std::memcpy(buf_, write_data, write_size);
+      pos_ = write_size;
+      return Status::OK();
+    }
+    return WriteUnbuffered(write_data, write_size);
+  }
+
+  Status Close() override {
+    Status status = FlushBuffer();
+    const int close_result = ::close(fd_);
+    if (close_result < 0 && status.ok()) {
+      status = PosixError(filename_, errno);
+    }
+    fd_ = -1;
+    return status;
+  }
+
+  Status Flush() override { return FlushBuffer(); }
+
+  Status Sync() override {
+    // Ensure new files referred to by the manifest are in the filesystem.
+    //
+    // This needs to happen before the manifest file is flushed to disk, to
+    // avoid crashing in a state where the manifest refers to files that are not
+    // yet on disk.
+    Status status = SyncDirIfManifest();
+    if (!status.ok()) {
+      return status;
+    }
+
+    status = FlushBuffer();
+    if (!status.ok()) {
+      return status;
+    }
+
+    return SyncFd(fd_, filename_);
+  }
+
+ private:
+  Status FlushBuffer() {
+    Status status = WriteUnbuffered(buf_, pos_);
+    pos_ = 0;
+    return status;
+  }
+
+  Status WriteUnbuffered(const char* data, size_t size) {
+    while (size > 0) {
+      ssize_t write_result = ::write(fd_, data, size);
+      if (write_result < 0) {
+        if (errno == EINTR) {
+          continue;  // Retry
+        }
+        return PosixError(filename_, errno);
+      }
+      data += write_result;
+      size -= write_result;
+    }
+    return Status::OK();
+  }
+
+  Status SyncDirIfManifest() {
+    Status status;
+    if (!is_manifest_) {
+      return status;
+    }
+
+    int fd = ::open(dirname_.c_str(), O_RDONLY);
+    if (fd < 0) {
+      status = PosixError(dirname_, errno);
+    } else {
+      status = SyncFd(fd, dirname_);
+      ::close(fd);
+    }
+    return status;
+  }
+
+  // Ensures that all the caches associated with the given file descriptor's
+  // data are flushed all the way to durable media, and can withstand power
+  // failures.
+  //
+  // The path argument is only used to populate the description string in the
+  // returned Status if an error occurs.
+  static Status SyncFd(int fd, const std::string& fd_path) {
+#if HAVE_FULLFSYNC
+    // On macOS and iOS, fsync() doesn't guarantee durability past power
+    // failures. fcntl(F_FULLFSYNC) is required for that purpose. Some
+    // filesystems don't support fcntl(F_FULLFSYNC), and require a fallback to
+    // fsync().
+    if (::fcntl(fd, F_FULLFSYNC) == 0) {
+      return Status::OK();
+    }
+#endif  // HAVE_FULLFSYNC
+
+#if HAVE_FDATASYNC
+    bool sync_success = ::fdatasync(fd) == 0;
+#else
+    bool sync_success = ::fsync(fd) == 0;
+#endif  // HAVE_FDATASYNC
+
+    if (sync_success) {
+      return Status::OK();
+    }
+    return PosixError(fd_path, errno);
+  }
+
+  // Returns the directory name in a path pointing to a file.
+  //
+  // Returns "." if the path does not contain any directory separator.
+  static std::string Dirname(const std::string& filename) {
+    std::string::size_type separator_pos = filename.rfind('/');
+    if (separator_pos == std::string::npos) {
+      return std::string(".");
+    }
+    // The filename component should not contain a path separator. If it does,
+    // the splitting was done incorrectly.
+    assert(filename.find('/', separator_pos + 1) == std::string::npos);
+
+    return filename.substr(0, separator_pos);
+  }
+
+  // Extracts the file name from a path pointing to a file.
+  //
+  // The returned Slice points to |filename|'s data buffer, so it is only valid
+  // while |filename| is alive and unchanged.
+  static Slice Basename(const std::string& filename) {
+    std::string::size_type separator_pos = filename.rfind('/');
+    if (separator_pos == std::string::npos) {
+      return Slice(filename);
+    }
+    // The filename component should not contain a path separator. If it does,
+    // the splitting was done incorrectly.
+    assert(filename.find('/', separator_pos + 1) == std::string::npos);
+
+    return Slice(filename.data() + separator_pos + 1,
+                 filename.length() - separator_pos - 1);
+  }
+
+  // True if the given file is a manifest file.
+  static bool IsManifest(const std::string& filename) {
+    return Basename(filename).starts_with("MANIFEST");
+  }
+
+  // buf_[0, pos_ - 1] contains data to be written to fd_.
+  char buf_[kWritableFileBufferSize];
+  size_t pos_;
+  int fd_;
+
+  const bool is_manifest_;  // True if the file's name starts with MANIFEST.
+  const std::string filename_;
+  const std::string dirname_;  // The directory of filename_.
+};
 
 class DirectSequentialFile final : public SequentialFile {
  public:
   DirectSequentialFile(std::string filename, char* file_buf, int idx)
-      : filename_(filename),
-        buf_(file_buf),
-        offset_(0),
-        idx_(idx),
+      : filename_(filename), buf_(file_buf), offset_(0), idx_(idx),
         size_(g_sb_ptr->sb_meta[idx].f_size) {
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -435,7 +665,9 @@ class DirectSequentialFile final : public SequentialFile {
     read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
   }
-  ~DirectSequentialFile() override { spdk_free(buf_); }
+  ~DirectSequentialFile() override {
+    spdk_free(buf_);
+  }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
     Status status;
@@ -448,7 +680,8 @@ class DirectSequentialFile final : public SequentialFile {
 
   Status Skip(uint64_t n) override {
     offset_ += n;
-    if (offset_ > OBJ_SIZE) return PosixError(filename_, errno);
+    if (offset_ > OBJ_SIZE)
+      return PosixError(filename_, errno);
     return Status::OK();
   }
 
@@ -463,9 +696,7 @@ class DirectSequentialFile final : public SequentialFile {
 class DirectRandomAccessFile final : public RandomAccessFile {
  public:
   DirectRandomAccessFile(std::string filename, char* file_buf, int idx)
-      : filename_(std::move(filename)),
-        buf_(file_buf),
-        idx_(idx),
+      : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
         size_(g_sb_ptr->sb_meta[idx].f_size) {
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -474,7 +705,9 @@ class DirectRandomAccessFile final : public RandomAccessFile {
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
   }
 
-  ~DirectRandomAccessFile() override { spdk_free(buf_); }
+  ~DirectRandomAccessFile() override {
+    spdk_free(buf_);
+  }
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) override {
@@ -493,17 +726,19 @@ class DirectRandomAccessFile final : public RandomAccessFile {
   uint32_t size_;
   int idx_;
 };
+
 
 class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
  public:
   DirectNoLoadRandomAccessFile(std::string filename, char* file_buf, int idx)
-      : filename_(std::move(filename)),
-        buf_(file_buf),
-        idx_(idx),
-        size_(g_sb_ptr->sb_meta[idx].f_size) {}
+      : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
+        size_(g_sb_ptr->sb_meta[idx].f_size) {
+  }
 
-  ~DirectNoLoadRandomAccessFile() override { spdk_free(buf_); }
-  
+  ~DirectNoLoadRandomAccessFile() override {
+    spdk_free(buf_);
+  }
+
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) override {
     Status status;
@@ -522,27 +757,21 @@ class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
   int idx_;
 };
 
-/* Unimplement is OK  */  
 // class DirectPartialRandomAccessFile final : public RandomAccessFile {
 //  public:
 //   DirectPartialRandomAccessFile(std::string filename, char* file_buf, int idx)
-//       : filename_(std::move(filename)),
-//         buf_(file_buf),
-//         idx_(idx),
-//         size_(g_sb_ptr->sb_meta[idx].f_size),
-//         bmap_(),
-//         last_bend_(-2),
-//         seq_cnt_(0),
+//       : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
+//         size_(g_sb_ptr->sb_meta[idx].f_size), bmap_(), last_bend_(-2), seq_cnt_(0),
 //         prefetch_idx_(-1) {
-//     v_compl_.reserve(OBJ_SIZE / READ_UNIT +
-//                      10);  // to prevent memory address change
+//     v_compl_.reserve(OBJ_SIZE / READ_UNIT + 10); // to prevent memory address change
 //   }
 
-//   ~DirectPartialRandomAccessFile() override { spdk_free(buf_); }
+//   ~DirectPartialRandomAccessFile() override {
+//     spdk_free(buf_);
+//   }
 
 //   Status Read(uint64_t offset, size_t n, Slice* result,
 //               char* scratch) override {
-//     printf("DirectPartialRandomAccessFile\n");
 //     Status status;
 //     if (offset + n > size_) {
 //       *result = Slice();
@@ -584,8 +813,9 @@ class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
 //     }
 //     if (need_chk) {
 //       for (int i = 0; i < v_compl_.size(); i++) {
-//         int* c = &v_compl_[i];
-//         while (*c == 0) check_completion(qpair);
+//         int *c = &v_compl_[i];
+//         while (*c == 0)
+//           check_completion(qpair);
 //       }
 //       v_compl_.clear();
 //       prefetch_idx_ = -1;
@@ -601,7 +831,7 @@ class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
 //       seq_cnt_ = 0;
 //     }
 
-//     if (seq_cnt_ >= 4) {  // prefetch threshold
+//     if (seq_cnt_ >= 4) { // prefetch threshold
 //       int idx = bend + 1;
 //       int bmap_idx = idx / 8;
 //       int bmap_shift = idx % 8;
@@ -630,22 +860,17 @@ class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
 
 //   int last_bend_;
 //   int seq_cnt_;
-//   int prefetch_idx_;  // pending prefetch if non negative
+//   int prefetch_idx_; // pending prefetch if non negative
 //   std::vector<int> v_compl_;
 
 //   uint8_t bmap_[DIV_ROUND_UP(OBJ_SIZE / READ_UNIT, 8)];
 // };
 
-class SpdkWritableFile final : public WritableFile {
+class DirectWritableFile final : public WritableFile {
  public:
-  SpdkWritableFile(std::string filename, char* file_buf, int idx, bool truncate)
-      : filename_(filename),
-        buf_(file_buf),
-        idx_(idx),
-        closed_(false),
-        size_(g_sb_ptr->sb_meta[idx].f_size),
-        synced_(size_),
-        compl_status_(0) {
+  DirectWritableFile(std::string filename, char* file_buf, int idx, bool truncate)
+      : filename_(filename), buf_(file_buf), idx_(idx), closed_(false),
+        size_(g_sb_ptr->sb_meta[idx].f_size), synced_(size_), compl_status_(0) {
     if (truncate) {
       size_ = 0;
       synced_ = 0;
@@ -658,8 +883,9 @@ class SpdkWritableFile final : public WritableFile {
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
   }
 
-  ~SpdkWritableFile() override {
-    if (!closed_) Close();
+  ~DirectWritableFile() override {
+    if (!closed_)
+      Close();
 #if LDB_CACHELAST
     if (filename_[filename_.size() - 1] == 'b' &&
         filename_[filename_.size() - 2] == 'd') {
@@ -696,8 +922,7 @@ class SpdkWritableFile final : public WritableFile {
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
     uint64_t offset = idx_ * META_SIZE;
-    char* meta_buf =
-        static_cast<char*>(g_sbbuf) + ROUND_DOWN(offset, g_sectsize);
+    char* meta_buf = static_cast<char*>(g_sbbuf) + ROUND_DOWN(offset, g_sectsize);
     uint64_t lba = offset / g_sectsize;
     write_from_buf(ns, qpair, meta_buf, lba, 1, nullptr);
 
@@ -707,10 +932,13 @@ class SpdkWritableFile final : public WritableFile {
     return Status::OK();
   }
 
-  Status Flush() override { return Status::OK(); }
+  Status Flush() override {
+    return Status::OK();
+  }
 
   Status Sync() override {
-    if (synced_ == size_) return Status::OK();
+    if (synced_ == size_)
+      return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
@@ -726,7 +954,8 @@ class SpdkWritableFile final : public WritableFile {
 
   Status AsyncSync() override {
     assert(tinfo.compaction_thd);
-    if (synced_ == size_) return Status::OK();
+    if (synced_ == size_)
+      return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
@@ -743,7 +972,8 @@ class SpdkWritableFile final : public WritableFile {
     assert(tinfo.compaction_thd);
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    if (compl_status_ == 0) check_completion(qpair);
+    if (compl_status_ == 0)
+      check_completion(qpair);
     return compl_status_ > 0 ? true : false;
   }
 
@@ -826,20 +1056,9 @@ class PosixEnv : public Env {
     std::abort();
   }
 
-  // Status PosixNewSequentialFile(const std::string& filename,
-  //                          SequentialFile** result) {
-  //   int fd = open(filename.c_str(), O_RDONLY);
-  //   if (fd < 0) {
-  //     *result = nullptr;
-  //     return PosixError(filename, errno);
-  //   }
-  //   *result = new PosixSequentialFile(filename, fd);
-  //   return Status::OK();
-  // }
-
   Status NewSequentialFile(const std::string& filename,
                            SequentialFile** result) override {
-    // dprint("NewSequentialFile %s\n", filename.c_str());
+    //dprint("NewSequentialFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
 #if LDB_SPLITFS
@@ -859,9 +1078,9 @@ class PosixEnv : public Env {
     int idx = g_file_table[basename];
     g_fs_mtx.Unlock();
 
-    char* fbuf = static_cast<char*>(
-        spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
-                    SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
+    char* fbuf = static_cast<char*>(spdk_malloc(OBJ_SIZE, BUF_ALIGN,
+                                    static_cast<uint64_t*>(NULL),
+                                    SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
     if (fbuf == NULL) {
       fprintf(stderr, "NewSequentialFile malloc failed\n");
       exit(1);
@@ -873,7 +1092,7 @@ class PosixEnv : public Env {
 
   Status NewRandomAccessFile(const std::string& filename,
                              RandomAccessFile** result) override {
-    // dprint("NewRandomAccessFile %s\n", filename.c_str());
+    //dprint("NewRandomAccessFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
 #if LDB_SPLITFS
@@ -907,15 +1126,15 @@ class PosixEnv : public Env {
     if (fbuf != nullptr) {
       *result = new DirectNoLoadRandomAccessFile(basename, fbuf, idx);
     } else {
-      fbuf = static_cast<char*>(
-          spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
-                      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
+      fbuf = static_cast<char*>(spdk_malloc(OBJ_SIZE, BUF_ALIGN,
+                                      static_cast<uint64_t*>(NULL),
+                                      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
       if (fbuf == NULL) {
         fprintf(stderr, "NewRandomAccessFile malloc failed\n");
         exit(1);
       }
 #if LDB_PARTIALREAD
-      *result = new DirectPartialRandomAccessFile(basename, fbuf, idx);
+      // *result = new DirectPartialRandomAccessFile(basename, fbuf, idx);
 #else
       *result = new DirectRandomAccessFile(basename, fbuf, idx);
 #endif
@@ -926,7 +1145,8 @@ class PosixEnv : public Env {
 
   Status NewWritableFile(const std::string& filename,
                          WritableFile** result) override {
-    // dprint("NewWritableFile %s\n", filename.c_str());
+    //dprint("NewWritableFile %s\n", filename.c_str());
+
     std::string basename = Basename(filename).ToString();
 
 #if LDB_SPLITFS
@@ -960,20 +1180,20 @@ class PosixEnv : public Env {
     g_fs_mtx.Unlock();
 
     char* fbuf = static_cast<char*>(
-        spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
-                    SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
+                 spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
+                             SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
     if (fbuf == NULL) {
       fprintf(stderr, "NewWritableFile malloc failed\n");
       exit(1);
     }
-    *result = new SpdkWritableFile(basename, fbuf, idx, true);
+    *result = new DirectWritableFile(basename, fbuf, idx, true);
 
     return Status::OK();
   }
 
   Status NewAppendableFile(const std::string& filename,
                            WritableFile** result) override {
-    // dprint("NewAppendableFile %s\n", filename.c_str());
+    //dprint("NewAppendableFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
 
@@ -1008,19 +1228,15 @@ class PosixEnv : public Env {
     g_fs_mtx.Unlock();
 
     char* fbuf = static_cast<char*>(
-        spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
-                    SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
+                 spdk_malloc(OBJ_SIZE, BUF_ALIGN, static_cast<uint64_t*>(NULL),
+                             SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA));
     if (fbuf == NULL) {
       fprintf(stderr, "NewAppendableFile malloc failed\n");
       exit(1);
     }
-    *result = new SpdkWritableFile(basename, fbuf, idx, false);
+    *result = new DirectWritableFile(basename, fbuf, idx, false);
 
     return Status::OK();
-  }
-
-  bool PosixFileExists(const std::string& filename) {
-    return access(filename.c_str(), F_OK) == 0;
   }
 
   bool FileExists(const std::string& filename) override {
@@ -1059,21 +1275,15 @@ class PosixEnv : public Env {
 #endif
 
     g_fs_mtx.Lock();
-    for (auto& it : g_file_table) result->emplace_back(it.first);
+    for (auto &it : g_file_table)
+      result->emplace_back(it.first);
     g_fs_mtx.Unlock();
 
     return Status::OK();
   }
 
-  Status PosixDeleteFile(const std::string& filename) {
-    if (unlink(filename.c_str()) != 0) {
-      return PosixError(filename, errno);
-    }
-    return Status::OK();
-  }
-
   Status DeleteFile(const std::string& filename) override {
-    // dprint("DeleteFile %s\n", filename.c_str());
+    //dprint("DeleteFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
 
@@ -1104,7 +1314,7 @@ class PosixEnv : public Env {
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    uint64_t offset = idx * META_SIZE;  // in bytes
+    uint64_t offset = idx * META_SIZE; // in bytes
     void* buf = static_cast<char*>(g_sbbuf) + ROUND_DOWN(offset, g_sectsize);
     write_from_buf(ns, qpair, buf, offset / g_sectsize, 1, nullptr);
 
@@ -1124,13 +1334,17 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
-  // ex : dirname = /dbbench
   // initialize internal filesystem here
-
   Status CreateDir(const std::string& dirname) override {
+#if LDB_SPLITFS
+    if (::mkdir(dirname.c_str(), 0755) != 0) {
+      if (errno != EEXIST) {
+        perror("create dir");
+        return PosixError(dirname, errno);
+      }
+    }
+#endif
     if (g_dbname == "") {
-      printf("dirname = ");
-      printf("%s\n", dirname.c_str());
       g_dbname = dirname;
       g_sbbuf = spdk_zmalloc(OBJ_SIZE, BUF_ALIGN, nullptr,
                              SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
@@ -1148,7 +1362,7 @@ class PosixEnv : public Env {
       g_sb_ptr = reinterpret_cast<SuperBlock*>(g_sbbuf);
       FileMeta* sb_meta = &g_sb_ptr->sb_meta[0];
       if (sb_meta->sb_magic == LDBFS_MAGIC) {
-        dprint("ldbfs found\n");
+        //dprint("ldbfs found\n");
         for (int i = 1; i < OBJ_CNT; i++) {
           FileMeta* meta_ent = &g_sb_ptr->sb_meta[i];
           if (meta_ent->f_name_len == 0) {
@@ -1207,7 +1421,7 @@ class PosixEnv : public Env {
   }
 
   Status GetFileSize(const std::string& filename, uint64_t* size) override {
-    // dprint("GetFileSize %s\n", filename.c_str());
+    //dprint("GetFileSize %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
 #if LDB_SPLITFS
@@ -1236,9 +1450,27 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
+  Status PosixRenameFile(const std::string& from, const std::string& to) {
+    if (rename(from.c_str(), to.c_str()) != 0) {
+      return PosixError(from, errno);
+    }
+    return Status::OK();
+  }
+
   Status RenameFile(const std::string& from, const std::string& to) override {
+    //dprint("RenameFile %s %s\n", from.c_str(), to.c_str());
+
     std::string basename_from = Basename(from).ToString();
     std::string basename_to = Basename(to).ToString();
+#if LDB_SPLITFS
+    uint64_t fnum;
+    FileType ftype;
+    ParseFileName(basename_from, &fnum, &ftype);
+    if (ftype != kTableFile) {
+      return PosixRenameFile(from, to);
+    }
+#endif
+
     g_fs_mtx.Lock();
 
     if (!g_file_table.count(basename_from)) {
@@ -1247,7 +1479,7 @@ class PosixEnv : public Env {
     }
 
     g_fs_mtx.Unlock();
-    DeleteFile(to);  // ignore error
+    DeleteFile(to); // ignore error
     g_fs_mtx.Lock();
 
     int idx = g_file_table[basename_from];
@@ -1259,7 +1491,7 @@ class PosixEnv : public Env {
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    uint64_t offset = idx * META_SIZE;  // in bytes
+    uint64_t offset = idx * META_SIZE; // in bytes
     void* buf = static_cast<char*>(g_sbbuf) + ROUND_DOWN(offset, g_sectsize);
     write_from_buf(ns, qpair, buf, offset / g_sectsize, 1, nullptr);
 
@@ -1289,7 +1521,10 @@ class PosixEnv : public Env {
   void StartThread(void (*thread_main)(void* thread_main_arg),
                    void* thread_main_arg) override;
 
-  Status GetTestDirectory(std::string* result) override { return Status::OK(); }
+  Status GetTestDirectory(std::string* result) override {
+
+    return Status::OK();
+  }
 
   Status NewLogger(const std::string& filename, Logger** result) override {
     std::FILE* fp = std::fopen(filename.c_str(), "w");
@@ -1351,6 +1586,9 @@ PosixEnv::PosixEnv()
   init_spdk();
   g_ns_mtx.Unlock();
 
+#if LDB_UNAFFINITIZE
+  spdk_unaffinitize_thread();
+#endif
 }
 
 void PosixEnv::Schedule(
@@ -1462,7 +1700,8 @@ void EnvPosixTestHelper::SetReadOnlyFDLimit(int limit) {
   g_open_read_only_file_limit = limit;
 }
 
-void EnvPosixTestHelper::SetReadOnlyMMapLimit(int limit) {}
+void EnvPosixTestHelper::SetReadOnlyMMapLimit(int limit) {
+}
 
 Env* Env::Default() {
   static PosixDefaultEnv env_container;
@@ -1470,3 +1709,4 @@ Env* Env::Default() {
 }
 
 }  // namespace leveldb
+
