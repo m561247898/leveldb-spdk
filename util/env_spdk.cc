@@ -427,9 +427,9 @@ Slice Basename(const std::string& filename) {
       filename.length() - separator_pos - 1);
 }
 
-class DirectSequentialFile final : public SequentialFile {
+class SpdkSequentialFile final : public SequentialFile {
  public:
-  DirectSequentialFile(std::string filename, char* file_buf, int idx)
+  SpdkSequentialFile(std::string filename, char* file_buf, int idx)
       : filename_(filename), buf_(file_buf), offset_(0), idx_(idx),
         size_(g_sb_ptr->sb_meta[idx].f_size) {
     struct ns_entry* ns_ent = g_namespaces;
@@ -439,7 +439,7 @@ class DirectSequentialFile final : public SequentialFile {
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
     printf("seq access size_ = %u\n", size_);
   }
-  ~DirectSequentialFile() override {
+  ~SpdkSequentialFile() override {
     spdk_free(buf_);
   }
 
@@ -502,9 +502,9 @@ class SpdkRandomAccessFile final : public RandomAccessFile {
   int idx_;
 };
 
-class DirectWritableFile final : public WritableFile {
+class SpdkWritableFile final : public WritableFile {
  public:
-  DirectWritableFile(std::string filename, char* file_buf, int idx, bool truncate)
+  SpdkWritableFile(std::string filename, char* file_buf, int idx, bool truncate)
       : filename_(filename), buf_(file_buf), idx_(idx), closed_(false),
         size_(g_sb_ptr->sb_meta[idx].f_size), synced_(size_), compl_status_(0) {
     if (truncate) {
@@ -519,7 +519,7 @@ class DirectWritableFile final : public WritableFile {
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
   }
 
-  ~DirectWritableFile() override {
+  ~SpdkWritableFile() override {
     if (!closed_)
       Close();
     spdk_free(buf_);
@@ -702,7 +702,7 @@ class PosixEnv : public Env {
       fprintf(stderr, "NewSequentialFile malloc failed\n");
       exit(1);
     }
-    *result = new DirectSequentialFile(basename, fbuf, idx);
+    *result = new SpdkSequentialFile(basename, fbuf, idx);
 
     return Status::OK();
   }
@@ -773,7 +773,7 @@ class PosixEnv : public Env {
       fprintf(stderr, "NewWritableFile malloc failed\n");
       exit(1);
     }
-    *result = new DirectWritableFile(basename, fbuf, idx, true);
+    *result = new SpdkWritableFile(basename, fbuf, idx, true);
 
     return Status::OK();
   }
@@ -812,7 +812,7 @@ class PosixEnv : public Env {
       fprintf(stderr, "NewAppendableFile malloc failed\n");
       exit(1);
     }
-    *result = new DirectWritableFile(basename, fbuf, idx, false);
+    *result = new SpdkWritableFile(basename, fbuf, idx, false);
 
     return Status::OK();
   }
@@ -964,13 +964,6 @@ class PosixEnv : public Env {
 
     g_fs_mtx.Unlock();
 
-    return Status::OK();
-  }
-
-  Status PosixRenameFile(const std::string& from, const std::string& to) {
-    if (rename(from.c_str(), to.c_str()) != 0) {
-      return PosixError(from, errno);
-    }
     return Status::OK();
   }
 
