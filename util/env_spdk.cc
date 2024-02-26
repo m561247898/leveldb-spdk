@@ -468,9 +468,9 @@ class DirectSequentialFile final : public SequentialFile {
   int idx_;
 };
 
-class DirectRandomAccessFile final : public RandomAccessFile {
+class SpdkRandomAccessFile final : public RandomAccessFile {
  public:
-  DirectRandomAccessFile(std::string filename, char* file_buf, int idx)
+  SpdkRandomAccessFile(std::string filename, char* file_buf, int idx)
       : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
         size_(g_sb_ptr->sb_meta[idx].f_size) {
     struct ns_entry* ns_ent = g_namespaces;
@@ -480,7 +480,7 @@ class DirectRandomAccessFile final : public RandomAccessFile {
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
     }
 
-  ~DirectRandomAccessFile() override {
+  ~SpdkRandomAccessFile() override {
     spdk_free(buf_);
   }
 
@@ -560,10 +560,10 @@ class DirectWritableFile final : public WritableFile {
   }
 
   Status Sync() override {
-    printf("Sync synced_ = %u\n", synced_);
-    printf("Sync size_ = %u\n", size_);
-    printf("Sync g_sb_ptr->sb_meta[idx].f_size = %u\n", g_sb_ptr->sb_meta[idx_].f_size);
-    std::cout << "The file is: " << filename_ << std::endl;
+    // printf("Sync synced_ = %u\n", synced_);
+    // printf("Sync size_ = %u\n", size_);
+    // printf("Sync g_sb_ptr->sb_meta[idx].f_size = %u\n", g_sb_ptr->sb_meta[idx_].f_size);
+    // std::cout << "The file is: " << filename_ << std::endl;
     if (synced_ == size_)
       return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
@@ -572,7 +572,6 @@ class DirectWritableFile final : public WritableFile {
     char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
     uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
     uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
-
     write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
     flush_to_dev(ns, qpair, nullptr);
     synced_ = size_;
@@ -725,7 +724,7 @@ class PosixEnv : public Env {
     g_fs_mtx.Unlock();
 
     if (fbuf != nullptr) {
-      *result = new DirectRandomAccessFile(basename, fbuf, idx);
+      *result = new SpdkRandomAccessFile(basename, fbuf, idx);
     } else {
       fbuf = static_cast<char*>(spdk_malloc(OBJ_SIZE, BUF_ALIGN,
                                       static_cast<uint64_t*>(NULL),
@@ -734,7 +733,7 @@ class PosixEnv : public Env {
         fprintf(stderr, "NewRandomAccessFile malloc failed\n");
         exit(1);
       }
-      *result = new DirectRandomAccessFile(basename, fbuf, idx);
+      *result = new SpdkRandomAccessFile(basename, fbuf, idx);
     }
 
     return Status::OK();
@@ -1095,9 +1094,6 @@ PosixEnv::PosixEnv()
   init_spdk();
   g_ns_mtx.Unlock();
 
-#if LDB_UNAFFINITIZE
-  spdk_unaffinitize_thread();
-#endif
 }
 
 void PosixEnv::Schedule(

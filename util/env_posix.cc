@@ -141,7 +141,6 @@ class PosixSequentialFile final : public SequentialFile {
   ~PosixSequentialFile() override { close(fd_); }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
-    printf("Read PosixSequentialFile 144\n");
     Status status;
     while (true) {
       ::ssize_t read_size = ::read(fd_, scratch, n);
@@ -295,7 +294,7 @@ class PosixWritableFile final : public WritableFile {
   }
 
   Status Append(const Slice& data) override {
-     printf("PosixWritableFile Append 299\n");
+
 	  size_t write_size = data.size();
     const char* write_data = data.data();
 
