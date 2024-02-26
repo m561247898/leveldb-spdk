@@ -31,7 +31,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
-
+#include <iostream>
 #include "leveldb/env.h"
 #include "leveldb/slice.h"
 #include "leveldb/status.h"
@@ -304,7 +304,7 @@ void read_to_buf(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
                  void *buf, uint64_t lba, uint32_t cnt, int* chk_compl)
 {
   int rc;
-
+  printf("read_to_buf\n");
   if (cnt == 0) {
     if (chk_compl != nullptr)
       *chk_compl = 1;
@@ -427,233 +427,6 @@ Slice Basename(const std::string& filename) {
       filename.length() - separator_pos - 1);
 }
 
-
-// Implements random read access in a file using mmap().
-//
-// Instances of this class are thread-safe, as required by the RandomAccessFile
-// API. Instances are immutable and Read() only calls thread-safe library
-// functions.
-class PosixMmapReadableFile final : public RandomAccessFile {
- public:
-  // mmap_base[0, length-1] points to the memory-mapped contents of the file. It
-  // must be the result of a successful call to mmap(). This instances takes
-  // over the ownership of the region.
-  PosixMmapReadableFile(std::string filename, char* mmap_base, size_t length)
-      : mmap_base_(mmap_base),
-        length_(length),
-        filename_(std::move(filename)) {}
-
-  ~PosixMmapReadableFile() override {
-    ::munmap(static_cast<void*>(mmap_base_), length_);
-  }
-
-  Status Read(uint64_t offset, size_t n, Slice* result,
-              char* scratch) override {
-    if (offset + n > length_) {
-      *result = Slice();
-      return PosixError(filename_, EINVAL);
-    }
-
-    *result = Slice(mmap_base_ + offset, n);
-    return Status::OK();
-  }
-
- private:
-  char* const mmap_base_;
-  const size_t length_;
-  const std::string filename_;
-};
-
-class PosixWritableFile final : public WritableFile {
- public:
-  PosixWritableFile(std::string filename, int fd)
-      : pos_(0),
-        fd_(fd),
-        is_manifest_(IsManifest(filename)),
-        filename_(std::move(filename)),
-        dirname_(Dirname(filename_)) {}
-
-  ~PosixWritableFile() override {
-    if (fd_ >= 0) {
-      // Ignoring any potential errors
-      Close();
-    }
-  }
-
-  Status Append(const Slice& data) override {
-    size_t write_size = data.size();
-    const char* write_data = data.data();
-
-    // Fit as much as possible into buffer.
-    size_t copy_size = std::min(write_size, kWritableFileBufferSize - pos_);
-    std::memcpy(buf_ + pos_, write_data, copy_size);
-    write_data += copy_size;
-    write_size -= copy_size;
-    pos_ += copy_size;
-    if (write_size == 0) {
-      return Status::OK();
-    }
-
-    // Can't fit in buffer, so need to do at least one write.
-    Status status = FlushBuffer();
-    if (!status.ok()) {
-      return status;
-    }
-
-    // Small writes go to buffer, large writes are written directly.
-    if (write_size < kWritableFileBufferSize) {
-      std::memcpy(buf_, write_data, write_size);
-      pos_ = write_size;
-      return Status::OK();
-    }
-    return WriteUnbuffered(write_data, write_size);
-  }
-
-  Status Close() override {
-    Status status = FlushBuffer();
-    const int close_result = ::close(fd_);
-    if (close_result < 0 && status.ok()) {
-      status = PosixError(filename_, errno);
-    }
-    fd_ = -1;
-    return status;
-  }
-
-  Status Flush() override { return FlushBuffer(); }
-
-  Status Sync() override {
-    // Ensure new files referred to by the manifest are in the filesystem.
-    //
-    // This needs to happen before the manifest file is flushed to disk, to
-    // avoid crashing in a state where the manifest refers to files that are not
-    // yet on disk.
-    Status status = SyncDirIfManifest();
-    if (!status.ok()) {
-      return status;
-    }
-
-    status = FlushBuffer();
-    if (!status.ok()) {
-      return status;
-    }
-
-    return SyncFd(fd_, filename_);
-  }
-
- private:
-  Status FlushBuffer() {
-    Status status = WriteUnbuffered(buf_, pos_);
-    pos_ = 0;
-    return status;
-  }
-
-  Status WriteUnbuffered(const char* data, size_t size) {
-    while (size > 0) {
-      ssize_t write_result = ::write(fd_, data, size);
-      if (write_result < 0) {
-        if (errno == EINTR) {
-          continue;  // Retry
-        }
-        return PosixError(filename_, errno);
-      }
-      data += write_result;
-      size -= write_result;
-    }
-    return Status::OK();
-  }
-
-  Status SyncDirIfManifest() {
-    Status status;
-    if (!is_manifest_) {
-      return status;
-    }
-
-    int fd = ::open(dirname_.c_str(), O_RDONLY);
-    if (fd < 0) {
-      status = PosixError(dirname_, errno);
-    } else {
-      status = SyncFd(fd, dirname_);
-      ::close(fd);
-    }
-    return status;
-  }
-
-  // Ensures that all the caches associated with the given file descriptor's
-  // data are flushed all the way to durable media, and can withstand power
-  // failures.
-  //
-  // The path argument is only used to populate the description string in the
-  // returned Status if an error occurs.
-  static Status SyncFd(int fd, const std::string& fd_path) {
-#if HAVE_FULLFSYNC
-    // On macOS and iOS, fsync() doesn't guarantee durability past power
-    // failures. fcntl(F_FULLFSYNC) is required for that purpose. Some
-    // filesystems don't support fcntl(F_FULLFSYNC), and require a fallback to
-    // fsync().
-    if (::fcntl(fd, F_FULLFSYNC) == 0) {
-      return Status::OK();
-    }
-#endif  // HAVE_FULLFSYNC
-
-#if HAVE_FDATASYNC
-    bool sync_success = ::fdatasync(fd) == 0;
-#else
-    bool sync_success = ::fsync(fd) == 0;
-#endif  // HAVE_FDATASYNC
-
-    if (sync_success) {
-      return Status::OK();
-    }
-    return PosixError(fd_path, errno);
-  }
-
-  // Returns the directory name in a path pointing to a file.
-  //
-  // Returns "." if the path does not contain any directory separator.
-  static std::string Dirname(const std::string& filename) {
-    std::string::size_type separator_pos = filename.rfind('/');
-    if (separator_pos == std::string::npos) {
-      return std::string(".");
-    }
-    // The filename component should not contain a path separator. If it does,
-    // the splitting was done incorrectly.
-    assert(filename.find('/', separator_pos + 1) == std::string::npos);
-
-    return filename.substr(0, separator_pos);
-  }
-
-  // Extracts the file name from a path pointing to a file.
-  //
-  // The returned Slice points to |filename|'s data buffer, so it is only valid
-  // while |filename| is alive and unchanged.
-  static Slice Basename(const std::string& filename) {
-    std::string::size_type separator_pos = filename.rfind('/');
-    if (separator_pos == std::string::npos) {
-      return Slice(filename);
-    }
-    // The filename component should not contain a path separator. If it does,
-    // the splitting was done incorrectly.
-    assert(filename.find('/', separator_pos + 1) == std::string::npos);
-
-    return Slice(filename.data() + separator_pos + 1,
-                 filename.length() - separator_pos - 1);
-  }
-
-  // True if the given file is a manifest file.
-  static bool IsManifest(const std::string& filename) {
-    return Basename(filename).starts_with("MANIFEST");
-  }
-
-  // buf_[0, pos_ - 1] contains data to be written to fd_.
-  char buf_[kWritableFileBufferSize];
-  size_t pos_;
-  int fd_;
-
-  const bool is_manifest_;  // True if the file's name starts with MANIFEST.
-  const std::string filename_;
-  const std::string dirname_;  // The directory of filename_.
-};
-
 class DirectSequentialFile final : public SequentialFile {
  public:
   DirectSequentialFile(std::string filename, char* file_buf, int idx)
@@ -664,12 +437,14 @@ class DirectSequentialFile final : public SequentialFile {
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
     read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
+    printf("seq access size_ = %u\n", size_);
   }
   ~DirectSequentialFile() override {
     spdk_free(buf_);
   }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
+    printf("Seq Read\n");
     Status status;
     n = std::min(n, size_ - offset_);
     memcpy(scratch, buf_ + offset_, n);
@@ -703,7 +478,7 @@ class DirectRandomAccessFile final : public RandomAccessFile {
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
     read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
-  }
+    }
 
   ~DirectRandomAccessFile() override {
     spdk_free(buf_);
@@ -727,145 +502,6 @@ class DirectRandomAccessFile final : public RandomAccessFile {
   int idx_;
 };
 
-
-class DirectNoLoadRandomAccessFile final : public RandomAccessFile {
- public:
-  DirectNoLoadRandomAccessFile(std::string filename, char* file_buf, int idx)
-      : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
-        size_(g_sb_ptr->sb_meta[idx].f_size) {
-  }
-
-  ~DirectNoLoadRandomAccessFile() override {
-    spdk_free(buf_);
-  }
-
-  Status Read(uint64_t offset, size_t n, Slice* result,
-              char* scratch) override {
-    Status status;
-    if (offset + n > size_) {
-      *result = Slice();
-      return PosixError(filename_, EINVAL);
-    }
-    *result = Slice(buf_ + offset, n);
-    return status;
-  }
-
- private:
-  const std::string filename_;
-  char* buf_;
-  uint32_t size_;
-  int idx_;
-};
-
-// class DirectPartialRandomAccessFile final : public RandomAccessFile {
-//  public:
-//   DirectPartialRandomAccessFile(std::string filename, char* file_buf, int idx)
-//       : filename_(std::move(filename)), buf_(file_buf), idx_(idx),
-//         size_(g_sb_ptr->sb_meta[idx].f_size), bmap_(), last_bend_(-2), seq_cnt_(0),
-//         prefetch_idx_(-1) {
-//     v_compl_.reserve(OBJ_SIZE / READ_UNIT + 10); // to prevent memory address change
-//   }
-
-//   ~DirectPartialRandomAccessFile() override {
-//     spdk_free(buf_);
-//   }
-
-//   Status Read(uint64_t offset, size_t n, Slice* result,
-//               char* scratch) override {
-//     Status status;
-//     if (offset + n > size_) {
-//       *result = Slice();
-//       return PosixError(filename_, EINVAL);
-//     }
-
-//     struct ns_entry* ns_ent = g_namespaces;
-//     struct spdk_nvme_ns* ns = ns_ent->ns;
-//     struct spdk_nvme_qpair* qpair = tinfo.qpair;
-
-//     int bstart = offset / READ_UNIT;
-//     int bend = (offset + n - 1) / READ_UNIT;
-//     for (int i = bstart; i <= bend; i++) {
-//       assert(i < OBJ_SIZE / READ_UNIT);
-//       int bmap_idx = i / 8;
-//       int bmap_shift = i % 8;
-//       if ((bmap_[bmap_idx] & (1 << (bmap_shift))) == 0) {
-//         char* target_buf = buf_ + i * READ_UNIT;
-//         uint64_t lba = g_sect_per_obj * idx_ + i * (READ_UNIT / g_sectsize);
-//         uint32_t cnt = READ_UNIT / g_sectsize;
-//         v_compl_.push_back(0);
-//         read_to_buf(ns, qpair, target_buf, lba, cnt, &v_compl_.back());
-//         bmap_[bmap_idx] |= (1 << (bmap_shift));
-//       }
-//     }
-
-//     bool need_chk = false;
-//     if (prefetch_idx_ >= 0) {
-//       if (prefetch_idx_ >= bstart && prefetch_idx_ <= bend) {
-//         assert(v_compl_.size() > 0);
-//         need_chk = true;
-//       } else if (v_compl_.size() > 1) {
-//         need_chk = true;
-//       }
-//     } else {
-//       if (v_compl_.size() > 0) {
-//         need_chk = true;
-//       }
-//     }
-//     if (need_chk) {
-//       for (int i = 0; i < v_compl_.size(); i++) {
-//         int *c = &v_compl_[i];
-//         while (*c == 0)
-//           check_completion(qpair);
-//       }
-//       v_compl_.clear();
-//       prefetch_idx_ = -1;
-//     }
-
-//     if (bend == last_bend_) {
-//       // do nothing
-//     } else if (bend == last_bend_ + 1) {
-//       last_bend_ = bend;
-//       seq_cnt_++;
-//     } else {
-//       last_bend_ = bend;
-//       seq_cnt_ = 0;
-//     }
-
-//     if (seq_cnt_ >= 4) { // prefetch threshold
-//       int idx = bend + 1;
-//       int bmap_idx = idx / 8;
-//       int bmap_shift = idx % 8;
-//       if (prefetch_idx_ < 0 && idx <= (size_ - 1) / READ_UNIT &&
-//           (bmap_[bmap_idx] & (1 << (bmap_shift))) == 0) {
-//         char* target_buf = buf_ + idx * READ_UNIT;
-//         uint64_t lba = g_sect_per_obj * idx_ + idx * (READ_UNIT / g_sectsize);
-//         uint32_t cnt = READ_UNIT / g_sectsize;
-//         v_compl_.push_back(0);
-//         read_to_buf(ns, qpair, target_buf, lba, cnt, &v_compl_.back());
-//         bmap_[bmap_idx] |= (1 << (bmap_shift));
-//         prefetch_idx_ = idx;
-//       }
-//     }
-
-//     *result = Slice(buf_ + offset, n);
-
-//     return status;
-//   }
-
-//  private:
-//   const std::string filename_;
-//   char* buf_;
-//   uint32_t size_;
-//   int idx_;
-
-//   int last_bend_;
-//   int seq_cnt_;
-//   int prefetch_idx_; // pending prefetch if non negative
-//   std::vector<int> v_compl_;
-
-//   uint8_t bmap_[DIV_ROUND_UP(OBJ_SIZE / READ_UNIT, 8)];
-// };
-
 class DirectWritableFile final : public WritableFile {
  public:
   DirectWritableFile(std::string filename, char* file_buf, int idx, bool truncate)
@@ -886,19 +522,6 @@ class DirectWritableFile final : public WritableFile {
   ~DirectWritableFile() override {
     if (!closed_)
       Close();
-#if LDB_CACHELAST
-    if (filename_[filename_.size() - 1] == 'b' &&
-        filename_[filename_.size() - 2] == 'd') {
-      g_fs_mtx.Lock();
-      if (g_last_write_buf != nullptr) {
-        spdk_free(g_last_write_buf);
-      }
-      g_last_write_buf = buf_;
-      g_last_write_idx = idx_;
-      g_fs_mtx.Unlock();
-      return;
-    }
-#endif
     spdk_free(buf_);
   }
 
@@ -937,6 +560,10 @@ class DirectWritableFile final : public WritableFile {
   }
 
   Status Sync() override {
+    printf("Sync synced_ = %u\n", synced_);
+    printf("Sync size_ = %u\n", size_);
+    printf("Sync g_sb_ptr->sb_meta[idx].f_size = %u\n", g_sb_ptr->sb_meta[idx_].f_size);
+    std::cout << "The file is: " << filename_ << std::endl;
     if (synced_ == size_)
       return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
@@ -1061,15 +688,6 @@ class PosixEnv : public Env {
     //dprint("NewSequentialFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixNewSequentialFile(filename, result);
-    }
-#endif
-
     g_fs_mtx.Lock();
     if (!g_file_table.count(basename)) {
       g_fs_mtx.Unlock();
@@ -1095,15 +713,6 @@ class PosixEnv : public Env {
     //dprint("NewRandomAccessFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixNewRandomAccessFile(filename, result);
-    }
-#endif
-
     char* fbuf = nullptr;
 
     g_fs_mtx.Lock();
@@ -1113,18 +722,10 @@ class PosixEnv : public Env {
     }
     int idx = g_file_table[basename];
 
-#if LDB_CACHELAST
-    if (g_last_write_idx == idx) {
-      fbuf = g_last_write_buf;
-      g_last_write_buf = nullptr;
-      g_last_write_idx = -1;
-    }
-#endif
-
     g_fs_mtx.Unlock();
 
     if (fbuf != nullptr) {
-      *result = new DirectNoLoadRandomAccessFile(basename, fbuf, idx);
+      *result = new DirectRandomAccessFile(basename, fbuf, idx);
     } else {
       fbuf = static_cast<char*>(spdk_malloc(OBJ_SIZE, BUF_ALIGN,
                                       static_cast<uint64_t*>(NULL),
@@ -1133,11 +734,7 @@ class PosixEnv : public Env {
         fprintf(stderr, "NewRandomAccessFile malloc failed\n");
         exit(1);
       }
-#if LDB_PARTIALREAD
-      // *result = new DirectPartialRandomAccessFile(basename, fbuf, idx);
-#else
       *result = new DirectRandomAccessFile(basename, fbuf, idx);
-#endif
     }
 
     return Status::OK();
@@ -1148,15 +745,6 @@ class PosixEnv : public Env {
     //dprint("NewWritableFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
-
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixNewWritableFile(filename, result);
-    }
-#endif
 
     g_fs_mtx.Lock();
     int idx;
@@ -1197,15 +785,6 @@ class PosixEnv : public Env {
 
     std::string basename = Basename(filename).ToString();
 
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixNewAppendableFile(filename, result);
-    }
-#endif
-
     g_fs_mtx.Lock();
     int idx;
     if (!g_file_table.count(basename)) {
@@ -1242,14 +821,6 @@ class PosixEnv : public Env {
   bool FileExists(const std::string& filename) override {
     std::string basename = Basename(filename).ToString();
 
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    if (ParseFileName(basename, &fnum, &ftype) && ftype != kTableFile) {
-      return PosixFileExists(filename);
-    }
-#endif
-
     bool ret;
     g_fs_mtx.Lock();
     ret = g_file_table.count(basename);
@@ -1257,22 +828,11 @@ class PosixEnv : public Env {
 
     return ret;
   }
-
+  
+  // 似乎沒用
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
     result->clear();
-
-#if LDB_SPLITFS
-    DIR* dir = opendir(directory_path.c_str());
-    if (dir == nullptr) {
-      return PosixError(directory_path, errno);
-    }
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-      result->emplace_back(entry->d_name);
-    }
-    closedir(dir);
-#endif
 
     g_fs_mtx.Lock();
     for (auto &it : g_file_table)
@@ -1286,16 +846,6 @@ class PosixEnv : public Env {
     //dprint("DeleteFile %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
-
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixDeleteFile(filename);
-    }
-#endif
-
     g_fs_mtx.Lock();
 
     if (!g_file_table.count(basename)) {
@@ -1318,14 +868,6 @@ class PosixEnv : public Env {
     void* buf = static_cast<char*>(g_sbbuf) + ROUND_DOWN(offset, g_sectsize);
     write_from_buf(ns, qpair, buf, offset / g_sectsize, 1, nullptr);
 
-#if LDB_CACHELAST
-    if (g_last_write_idx == idx) {
-      spdk_free(g_last_write_buf);
-      g_last_write_idx = -1;
-      g_last_write_buf = nullptr;
-    }
-#endif
-
     g_free_idx.push(idx);
     g_file_table.erase(basename);
 
@@ -1336,14 +878,6 @@ class PosixEnv : public Env {
 
   // initialize internal filesystem here
   Status CreateDir(const std::string& dirname) override {
-#if LDB_SPLITFS
-    if (::mkdir(dirname.c_str(), 0755) != 0) {
-      if (errno != EEXIST) {
-        perror("create dir");
-        return PosixError(dirname, errno);
-      }
-    }
-#endif
     if (g_dbname == "") {
       g_dbname = dirname;
       g_sbbuf = spdk_zmalloc(OBJ_SIZE, BUF_ALIGN, nullptr,
@@ -1386,14 +920,7 @@ class PosixEnv : public Env {
   }
 
   Status DeleteDir(const std::string& dirname) override {
-#if LDB_SPLITFS
-    if (::rmdir(dirname.c_str()) != 0) {
-      if (errno != ENOENT) {
-        perror("delete dir");
-        return PosixError(dirname, errno);
-      }
-    }
-#endif
+
     if (g_dbname != "") {
       struct ns_entry* ns_ent = g_namespaces;
       struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -1424,15 +951,6 @@ class PosixEnv : public Env {
     //dprint("GetFileSize %s\n", filename.c_str());
 
     std::string basename = Basename(filename).ToString();
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixGetFileSize(filename, size);
-    }
-#endif
-
     g_fs_mtx.Lock();
     if (!g_file_table.count(basename)) {
       g_fs_mtx.Unlock();
@@ -1462,15 +980,6 @@ class PosixEnv : public Env {
 
     std::string basename_from = Basename(from).ToString();
     std::string basename_to = Basename(to).ToString();
-#if LDB_SPLITFS
-    uint64_t fnum;
-    FileType ftype;
-    ParseFileName(basename_from, &fnum, &ftype);
-    if (ftype != kTableFile) {
-      return PosixRenameFile(from, to);
-    }
-#endif
-
     g_fs_mtx.Lock();
 
     if (!g_file_table.count(basename_from)) {

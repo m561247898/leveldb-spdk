@@ -45,15 +45,15 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    "fillseq,"
-    "fillsync,"
+    // "fillseq,"
+    // "fillsync,"
     "fillrandom,"
     // "overwrite,"
     // "readrandom,"
-    "readrandom,"  // Extra run to allow previous compactions to quiesce
-    "readseq,"
+    // "readrandom,"  // Extra run to allow previous compactions to quiesce
+    // "readseq,"
     // "readreverse,"
-    "compact,"
+    // "compact,"
     // "readrandom,"
     // "readseq,"
     // "readreverse,"
@@ -536,7 +536,6 @@ class Benchmark {
     g_env->GetChildren(FLAGS_db, &files);
     for (size_t i = 0; i < files.size(); i++) {
       if (Slice(files[i]).starts_with("heap-")) {
-        printf("db_bench 539\n");
         g_env->RemoveFile(std::string(FLAGS_db) + "/" + files[i]);
       }
     }
