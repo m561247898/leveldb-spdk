@@ -442,6 +442,8 @@ class SpdkSequentialFile final : public SequentialFile {
     std::cout << filename_ << std::endl;
     Status status;
     n = std::min(n, size_ - offset_);
+    if (n == 0)
+      return status;
     memcpy(scratch, buf_ + offset_, n);
     *result = Slice(scratch, n);
     offset_ += n;
