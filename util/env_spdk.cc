@@ -138,11 +138,6 @@ SuperBlock* g_sb_ptr;                     // guarded by g_fs_mtx
 std::map<std::string, int> g_file_table;  // guarded by g_fs_mtx
 std::queue<int> g_free_idx;               // guarded by g_fs_mtx
 
-#if LDB_CACHELAST
-char* g_last_write_buf = nullptr;
-int g_last_write_idx = -1;
-#endif
-
 port::Mutex g_fs_mtx;
 
 struct ThreadInfo {
@@ -304,7 +299,7 @@ void read_to_buf(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
                  void *buf, uint64_t lba, uint32_t cnt, int* chk_compl)
 {
   int rc;
-  printf("read_to_buf\n");
+
   if (cnt == 0) {
     if (chk_compl != nullptr)
       *chk_compl = 1;
@@ -398,9 +393,9 @@ void init_spdk(void)
   g_sect_per_obj = OBJ_SIZE / g_sectsize;
   g_dev_size = spdk_nvme_ns_get_size(ns_ent->ns);
 
-  //dprint("nvme sector size %d\n", g_sectsize);
-  //dprint("nvme ns sector count %d\n", g_nsect);
-  //dprint("sectors per block %d\n", g_sect_per_obj);
+  printf("nvme sector size %d\n", g_sectsize);
+  printf("nvme ns sector count %d\n", g_nsect);
+  printf("sectors per block %d\n", g_sect_per_obj);
 }
 
 namespace {
@@ -437,14 +432,14 @@ class SpdkSequentialFile final : public SequentialFile {
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
     read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
                 DIV_ROUND_UP(size_, g_sectsize), nullptr);
-    printf("seq access size_ = %u\n", size_);
   }
   ~SpdkSequentialFile() override {
     spdk_free(buf_);
   }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
-    printf("Seq Read\n");
+    std::cout << "Seq Read filename = ";
+    std::cout << filename_ << std::endl;
     Status status;
     n = std::min(n, size_ - offset_);
     memcpy(scratch, buf_ + offset_, n);
@@ -486,6 +481,8 @@ class SpdkRandomAccessFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) override {
+    // std::cout << "Random Read filename = ";
+    // std::cout << filename_ << std::endl;
     Status status;
     if (offset + n > size_) {
       *result = Slice();
@@ -528,7 +525,7 @@ class SpdkWritableFile final : public WritableFile {
   Status Append(const Slice& data) override {
     size_t write_size = data.size();
     const char* write_data = data.data();
-
+    
     if (size_ + write_size > OBJ_SIZE) {
       fprintf(stderr, "Writable File %s: exceed OBJ SIZE\n", filename_.c_str());
       return Status::IOError("exceed OBJ SIZE");
@@ -778,10 +775,13 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
+  // if want to reuse Manifest
+  // useless
   Status NewAppendableFile(const std::string& filename,
                            WritableFile** result) override {
     //dprint("NewAppendableFile %s\n", filename.c_str());
-
+    std::cout << "Newappendable  filename = ";
+    std::cout << filename << std::endl;
     std::string basename = Basename(filename).ToString();
 
     g_fs_mtx.Lock();
@@ -812,6 +812,7 @@ class PosixEnv : public Env {
       fprintf(stderr, "NewAppendableFile malloc failed\n");
       exit(1);
     }
+    
     *result = new SpdkWritableFile(basename, fbuf, idx, false);
 
     return Status::OK();
@@ -819,7 +820,6 @@ class PosixEnv : public Env {
 
   bool FileExists(const std::string& filename) override {
     std::string basename = Basename(filename).ToString();
-
     bool ret;
     g_fs_mtx.Lock();
     ret = g_file_table.count(basename);
@@ -828,7 +828,7 @@ class PosixEnv : public Env {
     return ret;
   }
   
-  // 似乎沒用
+  // useless?
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
     result->clear();
@@ -946,6 +946,7 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
+  // useless
   Status GetFileSize(const std::string& filename, uint64_t* size) override {
     //dprint("GetFileSize %s\n", filename.c_str());
 
@@ -966,6 +967,7 @@ class PosixEnv : public Env {
 
     return Status::OK();
   }
+
 
   Status RenameFile(const std::string& from, const std::string& to) override {
     //dprint("RenameFile %s %s\n", from.c_str(), to.c_str());
