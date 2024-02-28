@@ -46,10 +46,10 @@
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
     "fillseq," // Randomread is called
-    // "fillsync," // Randomread is not called
-    // "fillrandom," // Randomread is called
-    // "overwrite,"
-    // "readrandom,"
+    "fillsync," // Randomread is not called
+    "fillrandom," // Randomread is called
+    "overwrite,"
+    "readrandom,"
     // "readrandom,"  // Extra run to allow previous compactions to quiesce
     // "readseq," // no I/O
     // "readreverse,"
@@ -66,13 +66,13 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 100;
+static int FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
 static int FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
-static int FLAGS_threads = 1;
+static int FLAGS_threads = 4;
 
 // Size of each value
 static int FLAGS_value_size = 100;
