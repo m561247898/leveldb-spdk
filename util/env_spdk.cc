@@ -479,8 +479,8 @@ class SpdkRandomAccessFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) override {
-    // std::cout << "Random Read filename = ";
-    // std::cout << filename_ << std::endl;
+    std::cout << "Random Read filename = ";
+    std::cout << filename_ << std::endl;
     Status status;
     if (offset + n > size_) {
       *result = Slice();
