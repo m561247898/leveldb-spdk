@@ -84,11 +84,7 @@ static_assert(OBJ_CNT <= MAX_OBJ_CNT, "");
 
 #define FS_SIZE (OBJ_SIZE * OBJ_CNT)
 #define MAX_NAMELEN (META_SIZE - 8)
-
-#define PAGESIZE (4096)
-
 #define READ_UNIT (64ULL * 1024)            // Read granularity
-
 static_assert(OBJ_SIZE % READ_UNIT == 0, "");
 
 #define BUF_ALIGN (0x1000)
