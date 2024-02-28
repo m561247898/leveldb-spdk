@@ -470,16 +470,16 @@ class PosixWritableFile final : public WritableFile {
   const std::string dirname_;  // The directory of filename_.
 };
 
-// int LockOrUnlock(int fd, bool lock) {
-//   errno = 0;
-//   struct ::flock file_lock_info;
-//   std::memset(&file_lock_info, 0, sizeof(file_lock_info));
-//   file_lock_info.l_type = (lock ? F_WRLCK : F_UNLCK);
-//   file_lock_info.l_whence = SEEK_SET;
-//   file_lock_info.l_start = 0;
-//   file_lock_info.l_len = 0;  // Lock/unlock entire file.
-//   return ::fcntl(fd, F_SETLK, &file_lock_info);
-// }
+int LockOrUnlock(int fd, bool lock) {
+  errno = 0;
+  struct ::flock file_lock_info;
+  std::memset(&file_lock_info, 0, sizeof(file_lock_info));
+  file_lock_info.l_type = (lock ? F_WRLCK : F_UNLCK);
+  file_lock_info.l_whence = SEEK_SET;
+  file_lock_info.l_start = 0;
+  file_lock_info.l_len = 0;  // Lock/unlock entire file.
+  return ::fcntl(fd, F_SETLK, &file_lock_info);
+}
 
 // Instances are thread-safe because they are immutable.
 class PosixFileLock : public FileLock {
