@@ -153,7 +153,7 @@ bool g_vmd = false;
 bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
               struct spdk_nvme_ctrlr_opts* opts) {
   fprintf(stderr, "Attaching to %s\n", trid->traddr);
-  opts->io_queue_size = UINT16_MAX;
+  opts->io_queue_size = 1;
   return true;
 }
 

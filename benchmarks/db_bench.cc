@@ -45,17 +45,17 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    "fillseq," // Randomread is called
-    "fillsync," // Randomread is not called
-    "fillrandom," // Randomread is called
-    "overwrite,"
-    "readrandom,"
-    // "readrandom,"  // Extra run to allow previous compactions to quiesce
-    // "readseq," // no I/O
-    // "readreverse,"
-    "compact,"
+    // "fillseq," // Randomread is called
+    // "fillsync," // Randomread is not called
+    // "fillrandom," // Randomread is called
+    // "overwrite,"
     // "readrandom,"
-    // "readseq,"
+    // "readrandom,"  // Extra run to allow previous compactions to quiesce
+    "readseq," // no I/O
+    // "readreverse,"
+    // "compact,"
+    // "readrandom,"
+    "readseq,"
     // "readreverse,"
     // "fill100K,"
     // "crc32c,"
@@ -72,7 +72,7 @@ static int FLAGS_num = 1000000;
 static int FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
-static int FLAGS_threads = 4;
+static int FLAGS_threads = 16;
 
 // Size of each value
 static int FLAGS_value_size = 100;
