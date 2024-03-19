@@ -45,8 +45,8 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    // "fillseq," // Randomread is called
-    // "fillsync," // Randomread is not called
+    "fillseq," // Randomread is called
+    "fillsync," // Randomread is not called
     // "fillrandom," // Randomread is called
     // "overwrite,"
     // "readrandom,"
