@@ -288,9 +288,9 @@ class LEVELDB_EXPORT WritableFile {
   virtual Status Flush() = 0;
   virtual Status Sync() = 0;
   // spdk
-  virtual Status AsyncSync() { return Status::NotSupported("AsyncSync"); }
-  virtual bool CheckSync() { return false; }
-  virtual Status FlushSync() { return Status::NotSupported("FlushSync"); }
+  // virtual Status AsyncSync() { return Status::NotSupported("AsyncSync"); }
+  // virtual bool CheckSync() { return false; }
+  // virtual Status FlushSync() { return Status::NotSupported("FlushSync"); }
 
 };
 

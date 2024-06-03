@@ -45,17 +45,17 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    "fillseq," // Randomread is called
-    "fillsync," // Randomread is not called
-    // "fillrandom," // Randomread is called
+    "fillseq,"
+    "fillsync,"
+    "fillrandom," 
     // "overwrite,"
-    // "readrandom,"
+    "readrandom,"
     // "readrandom,"  // Extra run to allow previous compactions to quiesce
-    "readseq," // no I/O
+    // "readseq," // no I/O
     // "readreverse,"
     // "compact,"
     // "readrandom,"
-    "readseq,"
+    // "readseq,"
     // "readreverse,"
     // "fill100K,"
     // "crc32c,"
@@ -72,10 +72,11 @@ static int FLAGS_num = 1000000;
 static int FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
-static int FLAGS_threads = 16;
+static int FLAGS_threads = 1;
+static int read_thread = 1;
 
 // Size of each value
-static int FLAGS_value_size = 100;
+static int FLAGS_value_size = 2048;
 
 // Arrange to generate values that shrink to this fraction of
 // their original size after compression
@@ -596,7 +597,7 @@ class Benchmark {
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("fillsync")) {
         fresh_db = true;
-        num_ /= 1000;
+        num_ /= 50;
         write_options_.sync = true;
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("fill100K")) {
@@ -609,6 +610,7 @@ class Benchmark {
       } else if (name == Slice("readreverse")) {
         method = &Benchmark::ReadReverse;
       } else if (name == Slice("readrandom")) {
+        num_threads = read_thread;
         method = &Benchmark::ReadRandom;
       } else if (name == Slice("readmissing")) {
         method = &Benchmark::ReadMissing;

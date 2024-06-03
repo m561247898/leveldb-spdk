@@ -47,7 +47,8 @@
 #include "spdk/nvme.h"
 #include "spdk/stdinc.h"
 #include "spdk/string.h"
-
+#include "spdk/thread.h"
+#define SPDK_LOCK 0
 #ifdef NDEBUG
 // #define //dprint(...) do { } while (0)
 #else
@@ -56,11 +57,11 @@
 
 namespace leveldb {
 
-#define ROUND_UP(N, S) (((N) + (S)-1) / (S) * (S))
+#define ROUND_UP(N, S) (((N) + (S) - 1) / (S) * (S))
 #define ROUND_DOWN(N, S) ((N) / (S) * (S))
-#define DIV_ROUND_UP(N, S) (((N) + (S)-1) / (S))
+#define DIV_ROUND_UP(N, S) (((N) + (S) - 1) / (S))
 
-#define LDBFS_MAGIC (0xe51ab1541542020full)
+#define LDBFS_MAGIC (0x71110561612024)
 
 #ifdef LDB_OBJ_SIZE_MB
 #if LDB_OBJ_SIZE_MB < 4 || LDB_OBJ_SIZE_MB % 4 != 0
@@ -68,7 +69,7 @@ namespace leveldb {
 #endif
 #define OBJ_SIZE (1ULL * LDB_OBJ_SIZE_MB * 1024 * 1024)
 #else
-#define OBJ_SIZE (4ULL * 1024 * 1024)  // 4 MiB per object
+#define OBJ_SIZE (8ULL * 1024 * 1024)  // 4 MiB per object
 #endif
 
 #define META_SIZE (128)
@@ -421,8 +422,6 @@ class SpdkSequentialFile final : public SequentialFile {
   ~SpdkSequentialFile() override { spdk_free(buf_); }
 
   Status Read(size_t n, Slice* result, char* scratch) override {
-    std::cout << "Seq Read filename = ";
-    std::cout << filename_ << std::endl;
     Status status;
     n = std::min(n, size_ - offset_);
     if (n == 0) return status;
@@ -464,8 +463,6 @@ class SpdkRandomAccessFile final : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) override {
-    // std::cout << "Random Read filename = ";
-    // std::cout << filename_ << std::endl;
     Status status;
     if (offset + n > size_) {
       *result = Slice();
@@ -500,8 +497,8 @@ class SpdkWritableFile final : public WritableFile {
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
     struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
-                DIV_ROUND_UP(size_, g_sectsize), nullptr);
+    // read_to_buf(ns, qpair, buf_, g_sect_per_obj * idx,
+    //             DIV_ROUND_UP(size_, g_sectsize), nullptr);
   }
 
   ~SpdkWritableFile() override {
@@ -534,20 +531,13 @@ class SpdkWritableFile final : public WritableFile {
     uint64_t lba = offset / g_sectsize;
     write_from_buf(ns, qpair, meta_buf, lba, 1, nullptr);
 
-    Sync();
-
+    // Sync();
+    // CloseSync();
     closed_ = true;
     return Status::OK();
   }
 
-  Status Flush() override { return Status::OK(); }
-
-  Status Sync() override {
-    // printf("Sync synced_ = %u\n", synced_);
-    // printf("Sync size_ = %u\n", size_);
-    // printf("Sync g_sb_ptr->sb_meta[idx].f_size = %u\n",
-    // g_sb_ptr->sb_meta[idx_].f_size); std::cout << "The file is: " <<
-    // filename_ << std::endl;
+  Status CloseSync() {
     if (synced_ == size_) return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -556,13 +546,12 @@ class SpdkWritableFile final : public WritableFile {
     uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
     uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
     write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
-    flush_to_dev(ns, qpair, nullptr);
+    // flush_to_dev(ns, qpair, nullptr);
     synced_ = size_;
     return Status::OK();
   }
-
-  Status AsyncSync() override {
-    assert(tinfo.compaction_thd);
+  // Todo flush log, table,
+  Status Flush() override {
     if (synced_ == size_) return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -570,28 +559,63 @@ class SpdkWritableFile final : public WritableFile {
     char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
     uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
     uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
-
-    write_from_buf(ns, qpair, target_buf, lba, cnt, &compl_status_);
+    write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
+    // flush_to_dev(ns, qpair, nullptr);
     synced_ = size_;
     return Status::OK();
   }
 
-  bool CheckSync() override {
-    assert(tinfo.compaction_thd);
-    struct ns_entry* ns_ent = g_namespaces;
-    struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    if (compl_status_ == 0) check_completion(qpair);
-    return compl_status_ > 0 ? true : false;
-  }
+// Flush OK 
+// Status Flush() override {
+//     return Status::OK();
+//   }
 
-  Status FlushSync() override {
-    assert(tinfo.compaction_thd);
-    struct ns_entry* ns_ent = g_namespaces;
-    struct spdk_nvme_ns* ns = ns_ent->ns;
-    struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    flush_to_dev(ns, qpair, nullptr);
+  Status Sync() override {
+    Flush();
+    // if (synced_ == size_) return Status::OK();
+    // struct ns_entry* ns_ent = g_namespaces;
+    // struct spdk_nvme_ns* ns = ns_ent->ns;
+    // struct spdk_nvme_qpair* qpair = tinfo.qpair;
+    // char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
+    // uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
+    // uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
+    // write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
+    // flush_to_dev(ns, qpair, nullptr);
+    // synced_ = size_;
     return Status::OK();
   }
+
+  // Status AsyncSync() override {
+  //   assert(tinfo.compaction_thd);
+  //   if (synced_ == size_) return Status::OK();
+  //   struct ns_entry* ns_ent = g_namespaces;
+  //   struct spdk_nvme_ns* ns = ns_ent->ns;
+  //   struct spdk_nvme_qpair* qpair = tinfo.qpair;
+  //   char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
+  //   uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
+  //   uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
+
+  //   write_from_buf(ns, qpair, target_buf, lba, cnt, &compl_status_);
+  //   synced_ = size_;
+  //   return Status::OK();
+  // }
+
+  // bool CheckSync() override {
+  //   assert(tinfo.compaction_thd);
+  //   struct ns_entry* ns_ent = g_namespaces;
+  //   struct spdk_nvme_qpair* qpair = tinfo.qpair;
+  //   if (compl_status_ == 0) check_completion(qpair);
+  //   return compl_status_ > 0 ? true : false;
+  // }
+
+  // Status FlushSync() override {
+  //   assert(tinfo.compaction_thd);
+  //   struct ns_entry* ns_ent = g_namespaces;
+  //   struct spdk_nvme_ns* ns = ns_ent->ns;
+  //   struct spdk_nvme_qpair* qpair = tinfo.qpair;
+  //   flush_to_dev(ns, qpair, nullptr);
+  //   return Status::OK();
+  // }
 
  private:
   const std::string filename_;

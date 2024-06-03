@@ -1,0 +1,4 @@
+fillseq      :       2.884 micros/op;   38.4 MB/s     
+fillsync     :     409.694 micros/op;    0.3 MB/s (1000 ops)
+fillrandom   :       5.780 micros/op;   19.1 MB/s     
+readrandom   :       8.294 micros/op; (631691 of 1000000 found)

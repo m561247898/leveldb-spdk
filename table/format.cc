@@ -98,7 +98,7 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
       return s;
     }
   }
-
+  
   switch (data[n]) {
     case kNoCompression:
       if (data != buf) {
