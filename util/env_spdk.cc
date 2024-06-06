@@ -61,7 +61,7 @@ namespace leveldb {
 #define ROUND_DOWN(N, S) ((N) / (S) * (S))
 #define DIV_ROUND_UP(N, S) (((N) + (S) - 1) / (S))
 
-#define LDBFS_MAGIC (0x71110561612024)
+#define SPDKFS_MAGIC (0x71110561612024)
 
 #ifdef LDB_OBJ_SIZE_MB
 #if LDB_OBJ_SIZE_MB < 4 || LDB_OBJ_SIZE_MB % 4 != 0
@@ -69,11 +69,11 @@ namespace leveldb {
 #endif
 #define OBJ_SIZE (1ULL * LDB_OBJ_SIZE_MB * 1024 * 1024)
 #else
-#define OBJ_SIZE (8ULL * 1024 * 1024)  // 4 MiB per object
+#define OBJ_SIZE (8ULL * 1024 * 1024)  // 8 MiB per object
 #endif
 
 #define META_SIZE (128)
-#define MAX_OBJ_CNT (OBJ_SIZE / META_SIZE)  // maximum objs in LDBFS
+#define MAX_OBJ_CNT (OBJ_SIZE / META_SIZE - 1)  // max file nums
 
 #ifdef LDB_OBJ_CNT
 #define OBJ_CNT (LDB_OBJ_CNT)
@@ -119,10 +119,6 @@ struct ns_entry {
   struct ns_entry* next;
 };
 
-struct ctrlr_entry* g_controllers = NULL;  // guarded by g_ns_mtx
-struct ns_entry* g_namespaces = NULL;      // guarded by g_ns_mtx
-port::Mutex g_ns_mtx;
-
 int g_sectsize;
 int g_nsect;
 int g_sect_per_obj;
@@ -135,8 +131,21 @@ SuperBlock* g_sb_ptr;                     // guarded by g_fs_mtx
 std::map<std::string, int> g_file_table;  // guarded by g_fs_mtx
 std::queue<int> g_free_idx;               // guarded by g_fs_mtx
 
-port::Mutex g_fs_mtx;
+struct ctrlr_entry* g_controllers = NULL;  // guarded by g_ns_mtx
+struct ns_entry* g_namespaces = NULL;      // guarded by g_ns_mtx
+// port::Mutex g_ns_mtx;
+// port::Mutex g_fs_mtx;
 
+struct tas_lock {
+  std::atomic<bool> lock_ = {false};
+
+  void Lock() { while (lock_.exchange(true, std::memory_order_acquire)); }
+
+  void Unlock() { lock_.store(false, std::memory_order_release); }
+};
+
+tas_lock g_ns_mtx;
+tas_lock g_fs_mtx;
 struct ThreadInfo {
   bool compaction_thd;
   struct spdk_nvme_qpair* qpair;
@@ -149,7 +158,7 @@ struct ThreadInfo {
 
 thread_local ThreadInfo tinfo;
 
-bool g_vmd = false;
+// bool g_vmd = false;
 
 bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
               struct spdk_nvme_ctrlr_opts* opts) {
@@ -379,6 +388,7 @@ void init_spdk(void) {
   printf("nvme sector size %d\n", g_sectsize);
   printf("nvme ns sector count %d\n", g_nsect);
   printf("sectors per block %d\n", g_sect_per_obj);
+  printf("g_dev_size =  %d\n", (int)g_dev_size);
 }
 
 namespace {
@@ -551,7 +561,25 @@ class SpdkWritableFile final : public WritableFile {
     return Status::OK();
   }
   // Todo flush log, table,
-  Status Flush() override {
+  // Status Flush() override {
+  //   if (synced_ == size_) return Status::OK();
+  //   struct ns_entry* ns_ent = g_namespaces;
+  //   struct spdk_nvme_ns* ns = ns_ent->ns;
+  //   struct spdk_nvme_qpair* qpair = tinfo.qpair;
+  //   char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
+  //   uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
+  //   uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
+  //   write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
+  //   // flush_to_dev(ns, qpair, nullptr);
+  //   synced_ = size_;
+  //   return Status::OK();
+  // }
+
+  // Flush OK
+  Status Flush() override { return Status::OK(); }
+
+  Status Sync() override {
+    // Flush();
     if (synced_ == size_) return Status::OK();
     struct ns_entry* ns_ent = g_namespaces;
     struct spdk_nvme_ns* ns = ns_ent->ns;
@@ -560,28 +588,8 @@ class SpdkWritableFile final : public WritableFile {
     uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
     uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
     write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
-    // flush_to_dev(ns, qpair, nullptr);
+    flush_to_dev(ns, qpair, nullptr);
     synced_ = size_;
-    return Status::OK();
-  }
-
-// Flush OK 
-// Status Flush() override {
-//     return Status::OK();
-//   }
-
-  Status Sync() override {
-    Flush();
-    // if (synced_ == size_) return Status::OK();
-    // struct ns_entry* ns_ent = g_namespaces;
-    // struct spdk_nvme_ns* ns = ns_ent->ns;
-    // struct spdk_nvme_qpair* qpair = tinfo.qpair;
-    // char* target_buf = buf_ + ROUND_DOWN(synced_, g_sectsize);
-    // uint64_t lba = g_sect_per_obj * idx_ + synced_ / g_sectsize;
-    // uint32_t cnt = DIV_ROUND_UP(size_, g_sectsize) - synced_ / g_sectsize;
-    // write_from_buf(ns, qpair, target_buf, lba, cnt, nullptr);
-    // flush_to_dev(ns, qpair, nullptr);
-    // synced_ = size_;
     return Status::OK();
   }
 
@@ -832,7 +840,7 @@ class PosixEnv : public Env {
     return ret;
   }
 
-  // useless?
+  // useless
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
     result->clear();
@@ -897,7 +905,7 @@ class PosixEnv : public Env {
       read_to_buf(ns, qpair, g_sbbuf, 0, g_sect_per_obj, nullptr);
       g_sb_ptr = reinterpret_cast<SuperBlock*>(g_sbbuf);
       FileMeta* sb_meta = &g_sb_ptr->sb_meta[0];
-      if (sb_meta->sb_magic == LDBFS_MAGIC) {
+      if (sb_meta->sb_magic == SPDKFS_MAGIC) {
         // dprint("ldbfs found\n");
         for (int i = 1; i < OBJ_CNT; i++) {
           FileMeta* meta_ent = &g_sb_ptr->sb_meta[i];
@@ -909,7 +917,7 @@ class PosixEnv : public Env {
         }
       } else {
         memset(g_sbbuf, 0, sizeof(SuperBlock));
-        sb_meta->sb_magic = LDBFS_MAGIC;
+        sb_meta->sb_magic = SPDKFS_MAGIC;
         for (int i = 1; i < OBJ_CNT; i++) {
           g_free_idx.push(i);
         }
@@ -983,7 +991,7 @@ class PosixEnv : public Env {
     }
 
     g_fs_mtx.Unlock();
-    DeleteFile(to);  // ignore error
+    // DeleteFile(to);  // ignore error, currently disabled
     g_fs_mtx.Lock();
 
     int idx = g_file_table[basename_from];
@@ -1071,7 +1079,7 @@ class PosixEnv : public Env {
   port::Mutex background_work_mutex_;
   port::CondVar background_work_cv_ GUARDED_BY(background_work_mutex_);
   bool started_background_thread_ GUARDED_BY(background_work_mutex_);
-
+  
   std::queue<BackgroundWorkItem> background_work_queue_
       GUARDED_BY(background_work_mutex_);
 

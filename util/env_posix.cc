@@ -658,11 +658,7 @@ class PosixEnv : public Env {
   }
 
   Status RenameFile(const std::string& from, const std::string& to) override {
-    printf("RenameFile 669\n");
-    std::cout << "from =      ";
-    std::cout << from.c_str() << std::endl;
-    std::cout << "to =      ";
-    std::cout << to.c_str() << std::endl;
+
     if (std::rename(from.c_str(), to.c_str()) != 0) {
       return PosixError(from, errno);
     }

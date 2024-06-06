@@ -98,7 +98,7 @@ int main() { std::string str; return 0; }
 
 set(LEVELDB_PUBLIC_INCLUDE_DIR "include/leveldb")
 set(LEVELDB_PORT_CONFIG_DIR "include/port")
-set(ENV{HOME} "/home/hyam/spdk-v20.01.x")
+set(ENV{HOME} "/home/wys/spdk-v20.01.x")
 
 configure_file(
   "port/port_config.h.in"
@@ -108,12 +108,12 @@ configure_file(
 include_directories(
   "${PROJECT_BINARY_DIR}/include"
   "."
-  "/home/hyam/spdk-v20.01.x/spdk/include"
+  "/home/wys/spdk-v20.01.x/spdk/include"
 )
 
 link_directories(
-  "/home/hyam/spdk-v20.01.x/spdk/build/lib"
-  "/home/hyam/spdk-v20.01.x/spdk/dpdk/build/lib"
+  "/home/wys/spdk-v20.01.x/spdk/build/lib"
+  "/home/wys/spdk-v20.01.x/spdk/dpdk/build/lib"
 )
 
 if(BUILD_SHARED_LIBS)
