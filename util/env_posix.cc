@@ -629,7 +629,6 @@ class PosixEnv : public Env {
   }
 
   Status CreateDir(const std::string& dirname) override {
-    printf("CreateDir 640\n");
     std::cout << dirname.c_str() << std::endl;
     if (::mkdir(dirname.c_str(), 0755) != 0) {
       return PosixError(dirname, errno);
@@ -709,7 +708,7 @@ class PosixEnv : public Env {
     new_thread.detach();
   }
 
-  Status GetTestDirectory(std::string* result) override {
+  (std::string* result) override {
     const char* env = std::getenv("TEST_TMPDIR");
     if (env && env[0] != '\0') {
       *result = env;
