@@ -50,9 +50,9 @@
 #include "spdk/thread.h"
 #define SPDK_LOCK 0
 #ifdef NDEBUG
-// #define //dprint(...) do { } while (0)
+#define dprint(...) do { } while (0)
 #else
-// #define //dprint(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
+#define dprint(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
 #endif
 
 namespace leveldb {
@@ -906,7 +906,7 @@ class PosixEnv : public Env {
       g_sb_ptr = reinterpret_cast<SuperBlock*>(g_sbbuf);
       FileMeta* sb_meta = &g_sb_ptr->sb_meta[0];
       if (sb_meta->sb_magic == SPDKFS_MAGIC) {
-        // dprint("ldbfs found\n");
+        dprint("ldbfs found\n");
         for (int i = 1; i < OBJ_CNT; i++) {
           FileMeta* meta_ent = &g_sb_ptr->sb_meta[i];
           if (meta_ent->f_name_len == 0) {
